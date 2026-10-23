@@ -741,6 +741,9 @@ html body .sidebar .nav button.m-hide{display:none!important}
         <div style="margin-top:8px; font-size:11px; color:var(--muted); text-align:center;">
           Default password: <code style="font-family:monospace; background:var(--sky); padding:2px 4px; border-radius:4px;">Password123!</code>
         </div>
+        <button type="button" class="outline" onclick="openShareLinkModal()" style="width:100%; margin-top:10px; padding:9px; font-size:12px; display:flex; align-items:center; justify-content:center; gap:8px; border-radius:9px;">
+          <span>📱</span><span>Test on Phone (Scan QR Code / Open Link)</span>
+        </button>
       </div>
 
 
@@ -797,6 +800,7 @@ html body .sidebar .nav button.m-hide{display:none!important}
     <div><div class="crumb"><span id="crumb">Workspace</span></div><h2 id="pageTitle">Dashboard</h2></div>
   </div>
   <div class="top-actions">
+    <button class="outline" onclick="openShareLinkModal()" style="display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:12px;padding:0 12px;height:40px;border-radius:10px;"><span style="font-size:15px;">📱</span><span>Test on Phone</span></button>
     <button class="quick-jump-trigger" id="quickJumpBtn" onclick="openQuickJump()" aria-label="Quick jump (Ctrl or Command plus K)" title="Quick jump · Ctrl/⌘ K"><span aria-hidden="true">⌕</span><span class="quick-jump-label">Quick jump</span><kbd>Ctrl K</kbd></button>
     <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" aria-label="Switch between light and dark">☾</button>
     <span class="date-label" id="todayLabel" style="color:var(--muted);font-size:12px"></span>
@@ -1315,6 +1319,51 @@ function quickDemoLogin(role) {
     saveDB();
     checkAuth();
     toast('Signed in as ' + u.name + ' (' + role + ')');
+  }
+}
+
+function openShareLinkModal() {
+  const shareUrl = "https://ais-pre-c7urkbfytugzshaioj57kp-127082696976.europe-west1.run.app";
+  const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(shareUrl);
+  const mb = document.getElementById('modalback');
+  const mt = document.getElementById('modalTitle');
+  const mf = document.getElementById('modalForm');
+  mt.textContent = '📱 Open & Test on Other Devices';
+  mf.innerHTML = `
+    <div style="text-align:center; padding:10px 0 16px;">
+      <p style="color:var(--muted); font-size:13px; margin:0 0 16px;">
+        Scan this QR code with your phone camera, or copy the direct HTTPS link below to test on other devices.
+      </p>
+      <div style="display:inline-block; padding:12px; background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow);">
+        <img src="${qrUrl}" alt="Scan to test on mobile" style="width:200px; height:200px; display:block; border-radius:8px;" />
+      </div>
+      <div style="margin-top:16px;">
+        <label style="display:block; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:6px;">Live Link (HTTPS)</label>
+        <div style="display:flex; gap:8px; max-width:540px; margin:0 auto;">
+          <input type="text" readonly value="${shareUrl}" id="shareAppUrlInput" style="flex:1; font-family:monospace; font-size:12px; background:var(--card2); border:1px solid var(--line); padding:10px 12px; border-radius:10px;" />
+          <button type="button" class="primary" onclick="copyShareAppUrl()">Copy Link</button>
+        </div>
+      </div>
+      <div style="margin-top:18px; padding:14px; background:var(--sky); border-radius:12px; font-size:12px; color:var(--blue); text-align:left;">
+        <b>💡 Multi-Device Testing Tips:</b>
+        <ul style="margin:6px 0 0; padding-left:18px; line-height:1.6;">
+          <li>Log in as <b>Kofi Mensah (Student)</b> on your phone and as <b>Dr. Ama Mensah (Lecturer)</b> on your computer.</li>
+          <li>Post an announcement or start a live video class on one device, and watch it show up on the other in real-time!</li>
+          <li>All course registrations, submissions, quizzes, and announcements synchronize automatically via Firebase Cloud Firestore.</li>
+        </ul>
+      </div>
+    </div>
+  `;
+  mf.onsubmit = (e) => e.preventDefault();
+  mb.classList.add('open');
+}
+
+function copyShareAppUrl() {
+  const inp = document.getElementById('shareAppUrlInput');
+  if (inp) {
+    inp.select();
+    navigator.clipboard ? navigator.clipboard.writeText(inp.value) : document.execCommand('copy');
+    toast('Live link copied to clipboard!');
   }
 }
 
