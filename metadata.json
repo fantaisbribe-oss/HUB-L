@@ -1,0 +1,7 @@
+{
+  "name": "LectureHub",
+  "description": "Comprehensive learning management system for students and lecturers with course management, live classes, timetables, assignments, quizzes, marks, campus budget, and period tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

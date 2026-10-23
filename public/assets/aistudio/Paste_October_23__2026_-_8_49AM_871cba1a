@@ -1,0 +1,1567 @@
+# LECTUREHUB — MASTER SOFTWARE ENGINEERING INSTRUCTION
+## Complete Backend, Database, Authentication, Course Management, Student–Lecturer Activities, Security, and Full Application Integration
+
+---
+
+# PART 1: PROJECT IDENTITY AND MAIN OBJECTIVE
+
+You are acting as my senior full-stack software development team. Your responsibilities include frontend engineering, backend engineering, database architecture, Firebase integration, authentication, application security, file storage, real-time data synchronization, online examinations, academic records, and deployment.
+
+I have an existing web application called **LectureHub**.
+
+The main existing file is `WITH-P-SIZE.html`. The application already contains interface sections and JavaScript functionality for student accounts, lecturer accounts, courses, course registration, timetables, assignments, quizzes, examinations, student submissions, marks, attendance, announcements, course files, live classes, a student budget planner, and a period tracker.
+
+I do not want you to build an unrelated application from scratch.
+
+I want you to inspect my actual existing project, understand how it works, and convert it into a complete, database-connected learning management system.
+
+Your responsibility is to modify the actual project code, connect the existing interfaces to real backend operations, implement missing features, correct broken functionality, and test the resulting application.
+
+**The main requirement is that all activities under a registered course must function properly for both students and lecturers.**
+
+When a student registers for a course, that student's course workspace must become connected to the correct lecturer's course. Any activity published by that lecturer for that course must be available to eligible enrolled students. Any work submitted by those students must appear in the correct lecturer's submission area. Marks, feedback, attendance, announcements, files, quizzes, and meetings must remain associated with the correct course and authorized users.
+
+Do not return only a tutorial or code snippets. Make the changes to the available project files and deliver a working implementation.
+
+Do not claim a feature is finished unless you have implemented and tested it. If something requires credentials, billing, or an external service that I have not configured, implement the parts that can be completed and identify the remaining configuration clearly.
+
+---
+
+# PART 2: PRESERVE THE EXISTING LECTUREHUB WEBSITE
+
+Before making changes, inspect the entire existing application.
+
+Study the actual HTML, CSS, JavaScript, UI components, existing event handlers, current data structures, forms, navigation, dashboards, course views, and any additional project files.
+
+Identify every feature that already exists, every feature that is only a visual demonstration, and every feature that is partially implemented.
+
+Do not assume that an interface is functional merely because it has a button.
+
+Do not remove useful sections just because they are difficult to connect to the backend.
+
+Preserve the existing professional design, layout, color scheme, sidebars, navigation, responsive behavior, cards, tables, and page structure wherever possible.
+
+Keep the lecturer and student dashboards distinct. Students should see student features, and lecturers should see lecturer features.
+
+Preserve the existing compact dashboard preference. Important information should remain visible without unnecessary scrolling, while detailed pages can scroll when their content requires it.
+
+Make the website responsive on desktop, tablet, and mobile phones.
+
+Where the current application is implemented in a single HTML file, decide whether to retain that file temporarily or refactor the project into maintainable modules. If you refactor it, preserve all existing features and ensure the application can still be started using documented commands.
+
+Do not create duplicate versions of the same function, multiple competing database implementations, or conflicting event handlers.
+
+Create an implementation checklist based on the actual project before editing it. Then proceed with the work rather than stopping after the checklist.
+
+---
+
+# PART 3: REQUIRED TECHNICAL ARCHITECTURE
+
+Use the following technology unless inspection of the existing project reveals a compelling technical reason to use an equivalent approach.
+
+### Frontend
+
+Preserve the existing frontend framework where practical. If the project uses plain HTML, CSS, and JavaScript, it is acceptable to retain that structure while organizing the code into modules.
+
+### Authentication
+
+Use Firebase Authentication for real user registration, login, logout, authentication-state restoration, and password recovery.
+
+### Main database
+
+Use Cloud Firestore for persistent application data, including users, courses, enrolments, assignments, quizzes, submissions, results, attendance, announcements, and timetable information.
+
+### File storage
+
+Use Firebase Storage for assignment uploads, student submissions, course resources, and other permitted files.
+
+### Backend operations
+
+Use Firebase Cloud Functions or an equivalent trusted server environment for operations that require elevated privileges, sensitive validation, secure grading, course-code redemption, or protected meeting-token creation.
+
+### Security
+
+Use Firestore Security Rules, Storage Security Rules, trusted server-side authorization, and Firebase App Check where appropriate.
+
+### Live classes
+
+Use WebRTC with appropriate signaling and STUN/TURN infrastructure, or integrate a suitable conferencing provider. The system must support actual communication between different users and devices.
+
+### Deployment
+
+Prepare the application for HTTPS hosting, with a clear deployment process and separate development and production configurations.
+
+Use the modular Firebase JavaScript SDK. Keep authentication, database access, file storage, application services, and user-interface code separated logically.
+
+Do not place server-only secrets in browser JavaScript. Do not put a Firebase Admin SDK private key in the frontend. Do not commit private API keys or service credentials to a public repository.
+
+---
+
+# PART 4: REAL USER ACCOUNTS AND AUTHENTICATION
+
+Implement complete authentication for both students and lecturers.
+
+## 4.1 Student registration
+
+Students must be able to create accounts using the existing registration interface.
+
+Collect the fields that are appropriate for the existing design, such as:
+
+- Full name.
+- Email address.
+- Password.
+- Student account ID, if used.
+- Index number.
+- Phone number, if required.
+- Academic level.
+- Department or programme, if required.
+- Institution, if required.
+
+Validate all required fields. Normalize email addresses and relevant identifiers consistently. Check duplicate academic identifiers through trusted server-side validation where uniqueness is required.
+
+Create the Firebase Authentication account, then create the corresponding user profile in Firestore.
+
+Handle the case where authentication succeeds but profile creation fails. Provide a safe retry or recovery mechanism so that users are not left in an unusable state.
+
+Do not store passwords in Firestore.
+
+## 4.2 Lecturer registration
+
+Lecturers must be able to create lecturer accounts using the existing lecturer registration interface.
+
+Store the lecturer's name, email, profile information, role, and timestamps in the authorized user profile.
+
+Do not allow an ordinary student to become a lecturer by editing a form field or changing a JavaScript variable.
+
+If lecturer registration requires institutional approval, implement a configurable approval workflow. Unapproved accounts must not automatically receive unrestricted lecturer privileges.
+
+## 4.3 Login and logout
+
+Implement real login using Firebase Authentication.
+
+After login:
+
+1. Restore the authenticated user's profile.
+2. Verify the account is active.
+3. Load the correct role and permissions from trusted data.
+4. Open the correct dashboard.
+5. Load the user's permitted records.
+6. Subscribe to relevant real-time updates where appropriate.
+
+On logout:
+
+1. Sign out through Firebase Authentication.
+2. Remove sensitive in-memory data from the current session.
+3. Stop real-time listeners and media connections.
+4. Return to the login screen.
+5. Preserve all legitimate database records.
+
+Logging out must not delete courses, assignments, marks, submissions, enrolments, timetable entries, or other saved records.
+
+## 4.4 Password reset
+
+Provide a functional password-reset workflow using Firebase Authentication.
+
+Show clear messages for success and errors. Do not reveal private information unnecessarily when an email address is not registered.
+
+## 4.5 Session persistence
+
+When a user refreshes the browser, closes and reopens the application, or logs in from another authorized device, their saved workspace must be restored from the database.
+
+Do not depend on temporary JavaScript arrays to reconstruct a user's official academic records.
+
+---
+
+# PART 5: USER ROLES AND ACCESS CONTROL
+
+Implement at least these roles:
+
+- Student.
+- Lecturer.
+- Administrator, only if the application genuinely needs administrative management.
+
+Each role must have a separate set of permissions.
+
+### Students may:
+
+- View and edit permitted parts of their own profile.
+- Register for courses using valid registration codes.
+- View courses in which they are enrolled.
+- Read published activities for those courses.
+- Upload and submit permitted work.
+- Attempt authorized quizzes and examinations.
+- View their own released marks and feedback.
+- View their authorized timetable, announcements, resources, and meeting links.
+- Manage their own private budget and period-tracker records.
+
+### Lecturers may:
+
+- Create and manage their own courses.
+- Generate and manage enrolment codes for their courses.
+- View the enrolled students in their own courses.
+- Create and publish assignments and quizzes.
+- View and mark submissions for their courses.
+- Manage course attendance.
+- Publish course announcements and resources.
+- Manage timetable information and live classes.
+- Release marks according to the configured policy.
+
+### Administrators
+
+If an administrator role is required, define its privileges explicitly. Do not make every lecturer an administrator.
+
+A role must be established by trusted backend logic or protected administrative procedures. Never trust the role supplied by an unauthenticated request or an editable client-side field.
+
+Protect every backend operation, every database document, and every file. Hiding a button is not sufficient authorization.
+
+---
+
+# PART 6: COMPLETE COURSE CREATION AND MANAGEMENT
+
+Lecturers must be able to create and manage courses from the existing Courses & Codes section.
+
+Every course must have a persistent database record.
+
+Support fields such as:
+
+- Course ID.
+- Course name.
+- Course code.
+- Course description.
+- Lecturer UID.
+- Academic level.
+- Semester.
+- Academic year.
+- Department or programme.
+- Institution.
+- Teaching days.
+- Start date.
+- End date.
+- Start time.
+- End time.
+- Venue.
+- Publication status.
+- Enrolment status.
+- Created timestamp.
+- Updated timestamp.
+
+A lecturer must be able to:
+
+1. Create a course.
+2. View the course.
+3. Edit the course details.
+4. Change the timetable.
+5. View its enrolment code.
+6. View the class list.
+7. Open its assignments and quizzes.
+8. Review its submissions and results.
+9. Publish announcements.
+10. Upload course materials.
+11. Schedule live classes.
+12. Archive a course when it is no longer active.
+
+Validate all course details before saving.
+
+Only the course owner or another explicitly authorized lecturer may modify a course.
+
+When a lecturer edits a course, do not accidentally create a second course. Update the existing document.
+
+When a course is archived, preserve academic records according to the application's retention policy.
+
+Do not permanently delete all course data merely because a lecturer removes the course from the active dashboard.
+
+---
+
+# PART 7: COURSE LEVELS AND UNIQUE REGISTRATION CODES
+
+This section is critical.
+
+A lecturer may teach the same subject to several academic levels. For example, the lecturer may teach Introduction to GIS to Level 100 and Level 400.
+
+These must be separate course sections with separate enrolment records, registration codes, activities, class lists, and results.
+
+Do not mix students from different levels merely because the course names are similar.
+
+When a lecturer creates a course section, generate a unique, sufficiently unpredictable registration code using trusted backend logic.
+
+The code must be associated with the correct course ID, owner UID, level, and enrolment status.
+
+Provide the lecturer with controls to:
+
+- View the current code.
+- Copy the code.
+- Deactivate the code.
+- Regenerate the code.
+- Close enrolment.
+- Reopen enrolment if permitted.
+
+Do not use sequential or easily guessed registration codes.
+
+A code must not grant unrestricted access to a lecturer's account or other courses.
+
+---
+
+# PART 8: STUDENT COURSE REGISTRATION
+
+Students must be able to register for their courses from the existing Register Courses section.
+
+The workflow must be:
+
+1. The student logs in.
+2. The student enters a registration code.
+3. The frontend sends the code to a trusted backend operation.
+4. The backend authenticates the student.
+5. The backend validates the code.
+6. The backend checks that the course exists and accepts enrolments.
+7. The backend verifies that the student is eligible to register.
+8. The backend checks whether the student is already enrolled.
+9. The backend creates the enrolment record safely.
+10. The frontend displays a successful registration message.
+11. The registered course appears in the student's dashboard.
+12. The course remains available after refresh, logout, and subsequent login.
+
+Do not accept a course ID sent by the browser as proof of enrolment.
+
+Use the authenticated Firebase UID as the student identity.
+
+Enforce one active enrolment per student per course. Prevent duplicate enrolments even if a student clicks the register button multiple times or sends duplicate requests.
+
+If a student enters an invalid code, show an understandable error without exposing unnecessary private course information.
+
+Allow students to register for multiple courses.
+
+If the same student registers for Level 100 and Level 400 courses, keep the two sections separate.
+
+When a student is withdrawn from a course, enforce the configured access policy. Preserve existing marks and submissions as required by academic record retention rules.
+
+---
+
+# PART 9: THE COURSE WORKSPACE MUST BE THE CENTER OF THE APPLICATION
+
+Every course must have a dedicated workspace.
+
+When a student clicks a registered course, open that course's own activities and details.
+
+When a lecturer clicks a course, open that course's management workspace.
+
+All activities must have a reliable course association. Do not filter records only by a course name, a manually typed string, or a browser variable.
+
+Use a persistent course ID and verify membership or ownership.
+
+## Lecturer course workspace
+
+Include the appropriate existing sections for:
+
+- Course overview.
+- Enrolled students.
+- Assignments.
+- Quizzes and examinations.
+- Student submissions.
+- Marks and feedback.
+- Attendance.
+- Announcements.
+- Course files.
+- Timetable.
+- Live classes.
+- Assessment settings.
+
+## Student course workspace
+
+Include:
+
+- Course overview.
+- Course announcements.
+- Assignments.
+- Quizzes and examinations.
+- Submission history.
+- Uploaded course files.
+- Timetable and venue.
+- Live classes.
+- Attendance information where appropriate.
+- Released marks and feedback.
+
+A student should not have to search through unrelated courses to find an assignment.
+
+A lecturer should not have to search through unrelated classes to mark a submission.
+
+Activities must remain organized by course and class level throughout the application.
+
+---
+
+# PART 10: ASSIGNMENTS
+
+Implement the complete assignment lifecycle.
+
+## 10.1 Creating assignments
+
+Lecturers must be able to create assignments within a specific course.
+
+Support:
+
+- Title.
+- Instructions.
+- Course ID.
+- Maximum marks.
+- Publication status.
+- Available date.
+- Deadline.
+- Allowed file types.
+- Maximum upload size.
+- Late-submission policy.
+- Resubmission policy.
+- Optional reference files.
+- Creation and modification timestamps.
+
+Validate the assignment data before saving it.
+
+A draft assignment must not appear as published to students.
+
+## 10.2 Publishing assignments
+
+When a lecturer publishes an assignment:
+
+1. Save the assignment to Firestore.
+2. Mark it as published.
+3. Make it visible to eligible enrolled students.
+4. Update the lecturer's course view.
+5. Update student course views through a real-time listener or a fresh authorized query.
+6. Display its deadline and submission status.
+
+Do not create separate disconnected assignment copies for each student unless there is a justified reason. Use the authoritative assignment record and student-specific submission records.
+
+## 10.3 Student assignment submission
+
+Students must be able to:
+
+1. Open an assignment.
+2. Read its instructions.
+3. See the deadline.
+4. Select a file from their phone or computer.
+5. Upload the file to Firebase Storage.
+6. Wait for the upload to finish.
+7. Submit the assignment.
+8. Receive a confirmation.
+9. See the submission status.
+10. See feedback and marks after they are released.
+
+Support common academic document types such as DOC, DOCX, PDF, PPT, and PPTX when enabled.
+
+Validate file type, size, upload permissions, and course membership.
+
+Use a private Storage path associated with the course, assignment, and student UID.
+
+Do not store large file contents as base64 strings in Firestore.
+
+## 10.4 Submission records
+
+Every submission should contain the necessary metadata:
+
+- Submission ID.
+- Course ID.
+- Assignment ID.
+- Student UID.
+- Original filename.
+- Storage object path.
+- File type.
+- File size.
+- Submitted timestamp.
+- Attempt number.
+- Submission status.
+- Late-submission flag.
+- Mark.
+- Maximum marks.
+- Feedback.
+- Grading lecturer UID.
+- Grading timestamp.
+
+Use server-controlled timestamps for official submission records.
+
+Prevent a student from submitting for another student by changing a request field.
+
+Prevent a student from altering their own official mark or lecturer feedback.
+
+## 10.5 Lecturer marking
+
+Lecturers must be able to open the submission area for a particular course and assignment.
+
+Show the relevant student, filename, submission time, status, and available grading information.
+
+Provide a full-page or sufficiently large document preview where the browser supports it. For unsupported formats, provide a secure download or compatible preview option.
+
+Do not claim that all Word and PowerPoint files can be previewed natively in every browser. Implement an appropriate fallback.
+
+Allow lecturers to enter marks and feedback, save them, and return to the submissions list.
+
+Ensure that only authorized lecturers can mark the relevant course's submissions.
+
+The student should see the result only according to the configured release policy.
+
+## 10.6 Resubmissions
+
+If resubmission is enabled, create a new attempt or preserve the prior attempt history.
+
+Do not silently destroy the original submission when a student uploads a replacement.
+
+---
+
+# PART 11: QUIZZES AND EXAMINATIONS
+
+Implement a secure assessment system that works entirely through the application interface.
+
+## 11.1 Lecturer assessment creation
+
+Lecturers must be able to create quizzes and examinations for a specific course.
+
+Support:
+
+- Assessment title.
+- Instructions.
+- Course ID.
+- Assessment type.
+- Questions.
+- Question type.
+- Answer options.
+- Correct answer.
+- Marks per question.
+- Total available marks.
+- Duration.
+- Start time.
+- End time.
+- Attempt limit.
+- Publication status.
+- Result-release setting.
+- Optional question randomization.
+- Optional answer-option randomization.
+
+Support multiple-choice, true/false, and short-answer questions.
+
+Keep the existing assessment interface where possible, but ensure the backend model supports the required fields.
+
+Save drafts without publishing them.
+
+## 11.2 Secure answer storage
+
+Correct answers and private marking information must not be readable by students before the authorized result-release stage.
+
+Separate student-readable question content from protected answer keys or grading data when necessary.
+
+A student must not be able to inspect a quiz document and retrieve correct answers before submitting.
+
+Do not rely on JavaScript hiding the correct answer.
+
+## 11.3 Student assessment experience
+
+A student must be able to:
+
+1. See available assessments in the correct course.
+2. Open the assessment instructions.
+3. Confirm the allowed start time and deadline.
+4. Start the assessment when permitted.
+5. Answer questions.
+6. Navigate between questions.
+7. Save permitted progress.
+8. See the countdown timer.
+9. Submit the assessment.
+10. Receive confirmation.
+11. View results only when permitted.
+
+Prevent students from starting a quiz before its start time or submitting after its deadline unless the lecturer's configured policy allows it.
+
+## 11.4 Timer and autosave
+
+Use a trustworthy server-validated start time and deadline.
+
+Do not rely exclusively on the student's computer clock.
+
+Autosave answers at suitable intervals or after relevant changes, while preventing unauthorized changes after final submission.
+
+If the browser refreshes, restore the permitted in-progress attempt from the database.
+
+If the connection is lost, show a clear status and implement safe retry behavior.
+
+Do not claim that an answer has been securely saved until the backend confirms the write.
+
+When the deadline expires, enforce the configured auto-submit or close behavior through trusted server logic. Explain any limitations if the student's device is offline and the server cannot receive the final answers.
+
+## 11.5 Attempts and duplicate prevention
+
+Track each assessment attempt using a stable identifier.
+
+Enforce the configured attempt limit on the backend.
+
+Prevent duplicate submissions from creating duplicate marks.
+
+Do not allow a student to alter a finalized attempt by editing browser storage or sending a modified request.
+
+## 11.6 Automatic marking
+
+Grade objective questions using trusted server-side logic.
+
+Validate that each submitted answer belongs to a real question and a valid attempt.
+
+Calculate the score using the authoritative question marks and correct answers.
+
+Do not trust a score or maximum-mark value submitted by the browser.
+
+Short-answer questions may be manually marked by lecturers. Support pending-mark status, lecturer feedback, and result release.
+
+Do not use an AI-generated score as an official grade without an explicit, validated assessment policy.
+
+## 11.7 Assessment results
+
+Store:
+
+- Course ID.
+- Assessment ID.
+- Student UID.
+- Attempt ID.
+- Answers or permitted answer references.
+- Submission timestamp.
+- Score.
+- Maximum marks.
+- Marking status.
+- Feedback.
+- Release status.
+- Grading timestamp.
+
+Ensure results appear in the correct lecturer class list and student performance area.
+
+---
+
+# PART 12: MARKS AND STUDENT PERFORMANCE
+
+Implement persistent marks and performance tracking.
+
+Lecturers must be able to see the marks of students enrolled in the relevant course.
+
+Students must be able to see their own authorized marks.
+
+Support:
+
+- Assignment marks.
+- Quiz marks.
+- Examination marks.
+- Maximum available marks.
+- Manually awarded marks.
+- Automatically awarded marks.
+- Feedback.
+- Attendance contribution where configured.
+- Continuous assessment totals.
+- Percentages.
+- Pending results.
+- Released results.
+- Cumulative performance.
+
+Allow the lecturer to configure weighting. Do not assume that every course uses the same percentage distribution.
+
+Use one authoritative calculation method for each course's results.
+
+Do not count a single assessment more than once.
+
+Do not calculate official marks from duplicated records or stale browser data.
+
+Record changes to official marks, including the authorized editor, timestamp, and previous value where appropriate.
+
+When a lecturer updates a mark, save it to the database and update the appropriate views.
+
+When results are not yet released, students should see an appropriate status rather than private marking information.
+
+---
+
+# PART 13: CLASS LIST MANAGEMENT
+
+The lecturer's Class List Management section must be connected to real enrolment records.
+
+For each course-level section, display the authorized enrolled students and relevant academic fields.
+
+Use the fields already supported by the application where appropriate, such as:
+
+- Full name.
+- Student account ID.
+- Index number.
+- Phone number, if needed for academic administration.
+- Level.
+- Registration date.
+- Attendance summary.
+- Assignment performance.
+- Quiz performance.
+- Examination performance.
+- Cumulative marks.
+
+Do not mix students from unrelated courses or levels.
+
+Only authorized lecturers should access the class list.
+
+Students must not be able to view other students' private academic records.
+
+Provide sensible search and filtering, but ensure filtering is applied to data the user is already authorized to access.
+
+If a student withdraws, retain historical academic records according to the configured policy.
+
+---
+
+# PART 14: ATTENDANCE
+
+Implement attendance records that persist in the database.
+
+Lecturers must be able to create or open an attendance session for a course and date.
+
+Allow the lecturer to record permitted attendance statuses such as present, absent, or excused.
+
+Store the course ID, session ID, student UID, status, timestamp, and authorized recorder.
+
+Prevent duplicate attendance records from inflating attendance totals.
+
+Allow authorized lecturers to correct mistakes.
+
+Students may see their own attendance information if the application supports it, but they must not be able to modify official records directly.
+
+If attendance contributes to marks, configure its weighting and calculation explicitly.
+
+Do not silently count the same attendance session multiple times.
+
+---
+
+# PART 15: TIMETABLE AND RECURRING CLASSES
+
+Preserve the existing timetable functionality and make it database-driven.
+
+When a lecturer creates a course schedule, collect:
+
+- Teaching days.
+- Start time.
+- End time.
+- Start date.
+- End date.
+- Venue.
+- Course level.
+- Timezone, where needed.
+
+If Monday and Wednesday are selected, the course should recur on those days only during the configured date range.
+
+Display the schedule in the lecturer's timetable and in the timetables of students enrolled in that course.
+
+When the lecturer changes the schedule, update the relevant views without creating duplicate timetable entries.
+
+Prevent a class from appearing outside its configured date range.
+
+Handle daylight-saving or timezone conversion consistently where applicable.
+
+Show upcoming classes and relevant venue or online meeting information on the dashboards.
+
+---
+
+# PART 16: ANNOUNCEMENTS AND COURSE COMMUNICATION
+
+Lecturers must be able to publish announcements for individual courses.
+
+Support:
+
+- Announcement title.
+- Message body.
+- Course ID.
+- Author UID.
+- Publication status.
+- Publication timestamp.
+- Updated timestamp.
+- Optional attachment.
+- Optional read status.
+
+A student must see announcements only for courses in which they are authorized to participate.
+
+When a lecturer publishes an announcement, the correct students should receive the updated information through real-time listeners or a fresh query.
+
+If unread notifications are supported, track read status per recipient rather than globally marking an announcement as read for everyone.
+
+Do not expose announcements from private courses to unauthorized accounts.
+
+Do not claim email or push notifications work unless the required delivery service is configured and tested.
+
+---
+
+# PART 17: COURSE FILES AND LEARNING MATERIALS
+
+Lecturers must be able to upload and manage learning materials.
+
+Support files such as lecture notes, PDFs, Word documents, PowerPoint presentations, and other explicitly permitted formats.
+
+Store file bytes in Firebase Storage.
+
+Store metadata in Firestore, including:
+
+- File ID.
+- Course ID.
+- Uploader UID.
+- Original filename.
+- Storage object path.
+- MIME type.
+- File size.
+- Description.
+- Publication status.
+- Created timestamp.
+- Updated timestamp.
+
+Students enrolled in the course should be able to see and open the files that have been published to them.
+
+Prevent students from modifying or deleting lecturer-owned learning materials unless the application explicitly allows it.
+
+Validate file types and sizes on the backend or through appropriate upload restrictions and Storage Rules.
+
+Do not make private files publicly accessible simply to simplify the preview.
+
+When a lecturer removes a file, update its metadata and remove its Storage object when appropriate. Handle failures without leaving misleading UI states.
+
+---
+
+# PART 18: REAL LIVE VIDEO AND AUDIO CLASSES
+
+The existing live-class interface must become a genuine online classroom.
+
+A local camera preview is not a complete video call.
+
+Firebase can support meeting records, authorization, signaling, and metadata, but it does not itself carry the live audio/video media.
+
+Use WebRTC with appropriate STUN and TURN infrastructure, or integrate a suitable conferencing provider.
+
+## Lecturer workflow
+
+The lecturer must be able to:
+
+1. Open a particular course.
+2. Create a live meeting.
+3. Enter the title, date, and time.
+4. Publish the meeting to authorized students.
+5. Start the meeting.
+6. Enable or disable the camera and microphone.
+7. See connected participants.
+8. End the meeting.
+
+## Student workflow
+
+An enrolled student must be able to:
+
+1. Open the relevant course.
+2. View scheduled or active meetings.
+3. Join an authorized meeting.
+4. Grant camera and microphone permissions.
+5. See and hear the lecturer where supported.
+6. See and hear other participants according to the meeting configuration.
+7. Mute or unmute their microphone.
+8. Enable or disable their camera.
+9. Leave the meeting.
+
+## Technical requirements
+
+Implement:
+
+- Unique meeting IDs.
+- Course association.
+- Host UID.
+- Meeting status.
+- Start and end times.
+- Participant authorization.
+- Signaling.
+- Media connection setup.
+- Connection-state handling.
+- Participant presence.
+- Camera and microphone controls.
+- Cleanup of media tracks.
+- Handling of disconnected users.
+- Error messages.
+- Proper cleanup when leaving or ending the call.
+
+Use a suitable TURN server or conferencing provider for reliable connections across networks.
+
+Never expose long-lived provider secrets in browser code.
+
+Do not mark a meeting as connected unless a genuine participant connection has been established.
+
+Test the call using separate browser sessions or devices.
+
+If external configuration is required, tell me exactly which provider settings I must obtain and where to configure them.
+
+---
+
+# PART 19: BUDGET PLANNER
+
+Preserve the existing student budget planner.
+
+Budget records must belong to the authenticated user.
+
+Support:
+
+- Multiple budget plans.
+- Creating a new plan.
+- Renaming plans.
+- Switching between plans.
+- Adding categories.
+- Editing category names.
+- Removing categories.
+- Updating amounts.
+- Calculating totals.
+- Displaying remaining budget.
+- Saving changes.
+- Restoring plans after refresh or login.
+
+Use the existing category structure and currency format where appropriate.
+
+Do not make categories permanently fixed if the existing application allows users to customize them.
+
+Do not expose a student's budget to another student or lecturer.
+
+---
+
+# PART 20: PERIOD TRACKER
+
+Preserve the existing period tracker as a private, optional feature.
+
+Its records must be associated with the authenticated user and protected separately from academic records.
+
+If cloud persistence is enabled, allow the user to create, view, edit, and delete their own records.
+
+Do not expose period dates, symptoms, predictions, or other sensitive information to lecturers, students, course members, class lists, or general analytics.
+
+Do not include this information in course records.
+
+Do not log sensitive tracker values unnecessarily.
+
+Present cycle predictions as estimates rather than medical certainty.
+
+If the user deletes records, implement the defined deletion process and explain any applicable backup-retention limitations.
+
+---
+
+# PART 21: DATABASE SCHEMA AND DOCUMENT RELATIONSHIPS
+
+Create a documented, consistent Firestore schema based on the existing application.
+
+A possible starting structure is:
+
+`users/{uid}`
+
+Stores the user's authorized profile and role.
+
+`courses/{courseId}`
+
+Stores the course and its lecturer ownership.
+
+`courses/{courseId}/enrollments/{uid}`
+
+Stores the student's enrolment in that course.
+
+`courses/{courseId}/announcements/{announcementId}`
+
+Stores announcements for that course.
+
+`courses/{courseId}/resources/{resourceId}`
+
+Stores published learning-resource metadata.
+
+`courses/{courseId}/assignments/{assignmentId}`
+
+Stores assignment information.
+
+`courses/{courseId}/assignments/{assignmentId}/submissions/{submissionId}`
+
+Stores submission metadata and grading status.
+
+`courses/{courseId}/quizzes/{quizId}`
+
+Stores published assessment information.
+
+`courses/{courseId}/quizzes/{quizId}/attempts/{attemptId}`
+
+Stores assessment attempts and their status.
+
+`courses/{courseId}/attendanceSessions/{sessionId}`
+
+Stores attendance-session metadata.
+
+`courses/{courseId}/attendanceSessions/{sessionId}/records/{uid}`
+
+Stores attendance for the relevant student.
+
+`courses/{courseId}/gradeRecords/{uid}`
+
+Stores or summarizes the authorized student's course results where appropriate.
+
+`courses/{courseId}/meetings/{meetingId}`
+
+Stores live-meeting metadata.
+
+`users/{uid}/budgetPlans/{planId}`
+
+Stores the user's budget plans.
+
+`users/{uid}/periodTracker/{recordId}`
+
+Stores the user's private period-tracker records.
+
+You may refine this structure when needed, but document the final structure and why it is appropriate.
+
+Use stable document IDs and explicit relationships. Avoid depending on array indexes or arbitrary browser-generated numeric IDs.
+
+Use Firestore transactions or batched writes where multiple operations must remain consistent.
+
+Use server timestamps for important official records.
+
+Create required Firestore indexes.
+
+Design queries around the actual dashboard and course workflows. Do not load the entire database into the browser.
+
+Separate sensitive grading data from student-readable assessment content where necessary.
+
+---
+
+# PART 22: FIRESTORE SECURITY RULES
+
+Write real, deployable Firestore Security Rules for the actual schema.
+
+At minimum, enforce the following requirements:
+
+1. Unauthenticated users cannot read private records.
+2. Users can read their own profile and update only permitted fields.
+3. Students cannot assign themselves the lecturer or administrator role.
+4. Course creation and modification are restricted to authorized lecturers.
+5. Students can access only the course records they are permitted to access.
+6. Students cannot read private submissions belonging to other students.
+7. Lecturers can access submissions only for courses they own or are authorized to manage.
+8. Students cannot alter official marks or lecturer feedback.
+9. Students cannot change official attendance records.
+10. Students cannot read protected quiz answers before release.
+11. Students cannot bypass course membership by changing a course ID or document ID.
+12. Only authorized users can upload or read course files and submissions.
+13. Budget records are private to their owner.
+14. Period-tracker records are private to their owner.
+15. Meeting access is restricted to the host and authorized participants.
+16. Immutable ownership fields cannot be changed by unauthorized clients.
+17. Important fields, types, and permitted status changes are validated where possible.
+
+Do not use unrestricted rules such as allowing all reads and writes.
+
+Do not rely on frontend checks alone.
+
+Remember that Firebase Admin SDK operations bypass Firestore Security Rules. Every privileged Cloud Function must therefore authenticate its caller, check authorization, validate input, and enforce the business rules itself.
+
+Test the rules using the Firebase Emulator Suite where practical.
+
+---
+
+# PART 23: FIREBASE STORAGE SECURITY RULES
+
+Write actual Storage Rules for the file structure used by the application.
+
+At minimum:
+
+- Authenticate users before allowing private uploads or downloads.
+- Verify that students can upload only to their own permitted submission paths.
+- Verify course membership before allowing authorized access.
+- Restrict lecturer resource management to the appropriate course owner.
+- Enforce sensible file-size limits.
+- Restrict permitted MIME types where appropriate.
+- Prevent students from replacing other students' submissions.
+- Prevent unauthorized access to private student files.
+- Prevent users from changing file ownership by manipulating paths.
+- Support authorized lecturer review of submissions.
+
+Do not rely on file extensions alone to establish that a file is safe.
+
+Do not make all files publicly readable to simplify implementation.
+
+If malware scanning or advanced content validation is not available, explain the limitation.
+
+---
+
+# PART 24: CLOUD FUNCTIONS AND TRUSTED BACKEND SERVICES
+
+Implement the server-side operations needed by the application.
+
+At minimum, assess and implement:
+
+- Account/profile setup where needed.
+- Secure course-code generation.
+- Secure course-code redemption.
+- Course-enrolment validation.
+- Duplicate-enrolment prevention.
+- Assignment submission validation.
+- Assessment availability checks.
+- Quiz attempt-limit enforcement.
+- Quiz submission validation.
+- Objective-question grading.
+- Official result calculations.
+- Authorized mark updates.
+- Attendance validation.
+- Meeting-token creation where required.
+- Safe cleanup of temporary records if applicable.
+
+Every privileged function must:
+
+1. Verify the caller's Firebase Authentication identity.
+2. Verify the caller's role and permissions.
+3. Verify the relevant course ownership or enrolment.
+4. Validate all required fields.
+5. Reject malformed or unauthorized requests.
+6. Use server-controlled timestamps for official actions.
+7. Prevent duplicate execution where appropriate.
+8. Return structured success or error responses.
+9. Avoid logging passwords, private credentials, or unnecessary sensitive information.
+
+Use transactions or idempotency controls to prevent duplicate enrolments, duplicate submissions, and duplicate grading operations.
+
+Do not trust client-provided scores, course ownership, roles, registration-code validity, or official timestamps.
+
+---
+
+# PART 25: REAL-TIME DATABASE SYNCHRONIZATION
+
+Connect the interface to real Firestore data.
+
+Use real-time listeners where they provide meaningful benefits, such as:
+
+- Published assignments appearing in student courses.
+- New announcements appearing in course dashboards.
+- Submission status updates.
+- Lecturer marking updates.
+- Released results.
+- Course resource changes.
+- Meeting status updates.
+- Enrolment changes.
+
+Use ordinary queries for data that does not need continuous updates.
+
+When the user changes course or navigates away from a section, clean up old listeners.
+
+Avoid attaching duplicate listeners each time a component or tab is opened.
+
+Handle permission errors, network errors, and missing records clearly.
+
+Do not report a save as successful until the database operation has succeeded.
+
+Do not confuse locally cached data with a confirmed server write.
+
+---
+
+# PART 26: DATA PERSISTENCE AND LOCAL DATA MIGRATION
+
+The existing application may contain localStorage records, IndexedDB data, JavaScript arrays, and sample records.
+
+Inspect all of these before changing the storage model.
+
+Use Firebase as the authoritative source for shared academic records.
+
+Do not delete existing records without a deliberate migration and retention plan.
+
+If local user data needs to be migrated, create a migration procedure that:
+
+1. Identifies the data being migrated.
+2. Validates the record structure.
+3. Maps old identifiers to the new Firebase UIDs and document IDs.
+4. Checks for duplicate records.
+5. Preserves relationships between courses, students, submissions, and results.
+6. Reports failed or incomplete records.
+7. Can be safely retried without duplicating data.
+
+Do not automatically upload another user's local records to the currently logged-in account.
+
+Keep appropriate local-only preferences, such as theme settings, on the device if there is no need to synchronize them.
+
+Logging out must not delete saved server data.
+
+---
+
+# PART 27: ERROR HANDLING AND USER FEEDBACK
+
+Every operation must provide useful feedback.
+
+Implement clear messages for:
+
+- Incorrect login details.
+- Invalid registration code.
+- Closed enrolment.
+- Duplicate enrolment.
+- Missing course.
+- Unauthorized access.
+- Upload failure.
+- File too large.
+- Unsupported file type.
+- Assignment deadline passed.
+- Quiz not yet available.
+- Quiz closed.
+- Submission already completed.
+- Permission denied.
+- Database unavailable.
+- Network interruption.
+- Session expiration.
+- Missing resource.
+- Meeting connection failure.
+- Camera or microphone permission denied.
+
+Use loading indicators for long-running operations.
+
+Disable duplicate-submit buttons while an operation is in progress.
+
+Keep user-entered data available when safe to do so if a request fails.
+
+Never display fake success messages after a failed database write.
+
+Do not expose private server stack traces or credentials to the user.
+
+---
+
+# PART 28: PERFORMANCE AND SCALABILITY
+
+Design the database and queries so that the platform can support many courses and students.
+
+Avoid loading all users, all courses, all submissions, or all quiz attempts into every browser session.
+
+Use pagination for large lists.
+
+Create necessary Firestore indexes.
+
+Use efficient queries for the current user's courses and the lecturer's owned courses.
+
+Avoid duplicate data listeners and unnecessary repeated writes.
+
+Use batched writes or transactions for operations that require consistency.
+
+Be aware of Firebase usage limits and billing.
+
+Explain which services require the Blaze billing plan or other paid services before relying on them.
+
+Do not assume that an unused Firebase project already has Authentication, Firestore, Storage, Functions, or billing enabled.
+
+Provide setup instructions for enabling the required services.
+
+---
+
+# PART 29: SECURITY AND PRIVACY TESTING
+
+Create tests for both successful and unauthorized operations.
+
+Test at least these cases:
+
+- A student cannot change their role to lecturer.
+- A student cannot access an unrelated course.
+- A student cannot view another student's submission.
+- A student cannot edit official marks.
+- A student cannot alter official attendance.
+- A student cannot read protected correct answers.
+- A lecturer cannot modify a course owned by another lecturer unless explicitly authorized.
+- An unregistered student cannot join a private course meeting.
+- An unauthorized user cannot read private Storage files.
+- A user cannot read another user's budget.
+- A user cannot read another user's period-tracker data.
+- Invalid course codes are rejected.
+- Duplicate enrolments are prevented.
+- Duplicate quiz submissions do not create duplicate results.
+- Closed assessments enforce their configured deadlines.
+- Mark calculations cannot be manipulated by changing browser JavaScript.
+- Refreshing or reopening the browser does not erase legitimate saved data.
+
+Run security tests against the actual rules and backend operations, not just the frontend interface.
+
+---
+
+# PART 30: REQUIRED FUNCTIONAL TESTS
+
+After implementation, test complete user journeys.
+
+## Test A: Lecturer creates a course
+
+1. Create or sign in to a lecturer account.
+2. Open Courses & Codes.
+3. Create a course.
+4. Select the academic level.
+5. Set the teaching days and dates.
+6. Save the course.
+7. Generate a registration code.
+8. Refresh the page.
+9. Confirm that the course and code are still available to the authorized lecturer.
+
+## Test B: Student registers for a course
+
+1. Create or sign in to a student account.
+2. Enter a valid registration code.
+3. Confirm registration.
+4. Verify that the course appears in the student dashboard.
+5. Refresh the browser.
+6. Log out and sign in again.
+7. Confirm that the course remains available.
+8. Attempt duplicate registration and confirm it is safely rejected or handled without duplicate enrolment records.
+
+## Test C: Lecturer publishes an assignment
+
+1. Open the correct course.
+2. Create an assignment.
+3. Enter instructions and a deadline.
+4. Publish it.
+5. Sign in as an enrolled student in a separate session.
+6. Open the same course.
+7. Confirm that the assignment appears.
+8. Sign in as an unrelated student.
+9. Confirm that the assignment is not exposed as a private course activity.
+
+## Test D: Student submits an assignment
+
+1. Open the assignment.
+2. Upload a permitted document.
+3. Wait for upload completion.
+4. Submit the assignment.
+5. Confirm the submission record exists.
+6. Refresh the page.
+7. Confirm that the submission status remains.
+8. Open the lecturer's submission area.
+9. Confirm that the correct student and file appear under the correct assignment and course.
+
+## Test E: Lecturer marks an assignment
+
+1. Open a submitted assignment.
+2. Preview the document or use the supported fallback.
+3. Enter a mark and feedback.
+4. Save the result.
+5. Confirm that the mark persists.
+6. Release the result according to the configured policy.
+7. Sign in as the correct student.
+8. Confirm that the student can view the released mark and feedback.
+9. Confirm that another student cannot access the record.
+
+## Test F: Quiz or examination
+
+1. Create an assessment for a course.
+2. Add objective and short-answer questions.
+3. Configure marks, duration, availability, deadline, and attempt limits.
+4. Publish the assessment.
+5. Open it as an enrolled student.
+6. Attempt it during the allowed period.
+7. Submit answers.
+8. Verify server-side marking for objective questions.
+9. Verify that short-answer questions can be marked manually.
+10. Verify that the official result is stored correctly.
+11. Verify that correct answers and results are not exposed prematurely.
+12. Attempt to submit a duplicate or unauthorized attempt and verify rejection.
+
+## Test G: Course isolation
+
+1. Create two different courses or course-level sections.
+2. Publish separate activities in each.
+3. Register different students.
+4. Verify that each student sees only the permitted course activities.
+5. Verify that lecturer submissions and marks remain grouped under the correct course.
+6. Confirm that changing a browser-side course ID does not bypass authorization.
+
+## Test H: Timetable
+
+1. Create a course scheduled for selected weekdays.
+2. Configure its start and end dates.
+3. Confirm that the correct recurring entries appear.
+4. Sign in as an enrolled student.
+5. Confirm that the student sees the correct timetable.
+6. Change the schedule.
+7. Confirm that the old schedule is updated rather than duplicated.
+
+## Test I: Video meeting
+
+1. Create a meeting as a lecturer.
+2. Publish it to the course.
+3. Open another browser session as an enrolled student.
+4. Join the meeting.
+5. Test microphone and camera.
+6. Verify that both participants can communicate when the network and video service support it.
+7. Test leaving and rejoining.
+8. Verify that unauthorized users cannot join.
+
+## Test J: Persistence and privacy
+
+1. Save a budget plan.
+2. Refresh and log out.
+3. Sign back in.
+4. Confirm that the budget is restored.
+5. Save period-tracker information.
+6. Confirm that it remains private to the user.
+7. Sign in as another user and verify that those records are inaccessible.
+
+Report which tests passed, failed, or could not be executed because configuration is missing.
+
+---
+
+# PART 31: REQUIRED PROJECT FILES
+
+Deliver the actual project files needed to run the application.
+
+Organize the files clearly. Depending on the final architecture, include the appropriate equivalents of:
+
+- Application entry point.
+- Existing UI and styles.
+- Firebase configuration module.
+- Authentication service.
+- User-profile service.
+- Course service.
+- Enrolment service.
+- Assignment service.
+- Submission service.
+- Quiz and examination service.
+- Grading service.
+- Attendance service.
+- Timetable service.
+- Announcement service.
+- Course-file service.
+- Meeting service.
+- Budget service.
+- Period-tracker service.
+- Shared validation utilities.
+- Firebase Security Rules.
+- Firebase Storage Security Rules.
+- Cloud Functions source.
+- Firestore indexes.
+- Dependency configuration.
+- Firebase project configuration.
+- Environment-variable example file.
+- Automated tests.
+- Setup documentation.
+- Deployment instructions.
+
+Adapt the exact structure to the existing framework.
+
+Do not create empty files merely to make the project appear complete. Every included module must have a clear purpose.
+
+Keep configuration placeholders separate from real credentials.
+
+Include a README that explains how to install dependencies, configure Firebase, run locally, run tests, and deploy.
+
+---
+
+# PART 32: FIREBASE CONFIGURATION
+
+Use the existing Firebase project.
+
+Do not invent the project ID or configuration values.
+
+Provide a clearly documented place to enter the Firebase web configuration values obtained from the Firebase Console.
+
+Use environment variables or the appropriate framework configuration mechanism when supported.
+
+Explain which web configuration values are public identifiers and why actual access protection comes from Firebase Security Rules, Authentication, and backend authorization.
+
+Do not request or expose private service-account credentials.
+
+If Firebase Authentication, Firestore, Storage, Cloud Functions, or App Check is not enabled, give me the exact steps needed to enable the relevant service.
+
+If Cloud Functions deployment requires a billing upgrade, explain that before relying on it.
+
+Do not claim deployment has succeeded unless it has actually been performed and verified.
+
+---
+
+# PART 33: DEPLOYMENT AND PRODUCTION READINESS
+
+Prepare the application for deployment over HTTPS.
+
+Provide the appropriate configuration for the selected hosting provider.
+
+Document:
+
+- How to install dependencies.
+- How to configure the Firebase project.
+- How to run the application locally.
+- How to run tests.
+- How to configure required environment variables.
+- How to deploy Firestore Rules.
+- How to deploy Storage Rules.
+- How to deploy Cloud Functions.
+- How to deploy the frontend.
+- How to verify authentication and course registration.
+- How to verify assignment uploads.
+- How to verify quiz submission and marking.
+- How to test the video provider.
+- How to inspect logs safely.
+- How to roll back an unsuccessful deployment.
+
+Use separate development and production configurations where appropriate.
+
+Do not disable security rules to make deployment easier.
+
+Do not use demonstration credentials in the production environment.
+
+Do not mark the system production-ready until the critical authorization, data-integrity, and functional tests have passed.
+
+---
+
+# PART 34: FINAL IMPLEMENTATION REPORT
+
+At the end of the work, provide a report with the following sections.
+
+### A. Existing code inspected
+
+List the actual files inspected and identify the existing implementation.
+
+### B. Files created or modified
+
+List every actual file changed and summarize the change.
+
+### C. Database implemented
+
+Describe the final Firestore collections, relationships, important fields, and indexes.
+
+### D. Authentication
+
+State exactly what works for students and lecturers.
+
+### E. Course registration
+
+Explain how course codes, enrolments, course levels, and membership checks work.
+
+### F. Course activities
+
+Report the status of assignments, submissions, quizzes, examinations, marks, attendance, announcements, resources, timetables, and meetings.
+
+### G. File handling
+
+Explain the actual upload, storage, access-control, preview, and download behavior.
+
+### H. Security
+
+List the actual security rules and backend checks implemented and the tests executed.
+
+### I. Test results
+
+List tests that passed, failed, or could not run.
+
+### J. Configuration still required
+
+Identify Firebase services, credentials, billing, TURN infrastructure, or other external services that I must configure.
+
+### K. Deployment
+
+Explain the commands and steps needed to deploy the completed project.
+
+### L. Incomplete features
+
+List anything not finished. Do not hide limitations.
+
+---
+
+# FINAL COMMAND
+
+Begin by inspecting my actual `WITH-P-SIZE.html` file and every other available project file.
+
+Then implement the backend and integrate it with the existing frontend.
+
+Do not merely return a suggested architecture or a generic tutorial.
+
+Do not rebuild the entire interface unnecessarily.
+
+Do not remove working functionality without replacing it with equivalent functionality.
+
+Do not leave buttons that only display fake success messages.
+
+Do not leave official academic data stored only in browser memory.
+
+Do not expose private submissions, marks, quiz answers, budget data, or period-tracker information.
+
+Do not claim that WebRTC, authentication, database persistence, or security works unless it has been implemented and tested.
+
+**The priority is a connected, secure, persistent LectureHub application in which every course has the correct lecturer, registered students, activities, submissions, marks, attendance, announcements, resources, timetable, and live-class access.**
+
+Make the actual code changes, run the available tests, correct the failures, and deliver the updated project files with clear setup instructions.
+
+If the full application cannot be completed in one generation, work through the implementation stages in order. Save the changes, clearly identify what has been completed, and continue from the actual project state rather than generating disconnected replacement snippets.
