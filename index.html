@@ -1323,33 +1323,44 @@ function quickDemoLogin(role) {
 }
 
 function openShareLinkModal() {
-  const shareUrl = "https://ais-pre-c7urkbfytugzshaioj57kp-127082696976.europe-west1.run.app";
-  const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(shareUrl);
+  const ghUrl = "https://fantaisbribe-oss.github.io/HUB-L/";
+  const currentUrl = (typeof window !== 'undefined' && window.location.href) ? window.location.href.split('#')[0] : ghUrl;
+  const preferredUrl = window.location.hostname.includes('github.io') ? ghUrl : currentUrl;
+  const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(preferredUrl);
   const mb = document.getElementById('modalback');
   const mt = document.getElementById('modalTitle');
   const mf = document.getElementById('modalForm');
-  mt.textContent = '📱 Open & Test on Other Devices';
+  mt.textContent = '📱 Multi-Device Live Testing';
   mf.innerHTML = `
     <div style="text-align:center; padding:10px 0 16px;">
       <p style="color:var(--muted); font-size:13px; margin:0 0 16px;">
-        Scan this QR code with your phone camera, or copy the direct HTTPS link below to test on other devices.
+        Scan this QR code with your phone camera or copy either link below to test real-time synchronization across devices.
       </p>
       <div style="display:inline-block; padding:12px; background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow);">
         <img src="${qrUrl}" alt="Scan to test on mobile" style="width:200px; height:200px; display:block; border-radius:8px;" />
       </div>
-      <div style="margin-top:16px;">
-        <label style="display:block; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:6px;">Live Link (HTTPS)</label>
-        <div style="display:flex; gap:8px; max-width:540px; margin:0 auto;">
-          <input type="text" readonly value="${shareUrl}" id="shareAppUrlInput" style="flex:1; font-family:monospace; font-size:12px; background:var(--card2); border:1px solid var(--line); padding:10px 12px; border-radius:10px;" />
-          <button type="button" class="primary" onclick="copyShareAppUrl()">Copy Link</button>
+      <div style="margin-top:16px; display:flex; flex-direction:column; gap:10px; max-width:540px; margin-left:auto; margin-right:auto;">
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:4px; text-align:left;">GitHub Pages Link</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" readonly value="${ghUrl}" id="shareGhUrlInput" style="flex:1; font-family:monospace; font-size:12px; background:var(--card2); border:1px solid var(--line); padding:9px 12px; border-radius:10px;" />
+            <button type="button" class="primary" onclick="copyBox('shareGhUrlInput')">Copy</button>
+          </div>
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:4px; text-align:left;">Cloud Run Link</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" readonly value="${currentUrl}" id="shareAppUrlInput" style="flex:1; font-family:monospace; font-size:12px; background:var(--card2); border:1px solid var(--line); padding:9px 12px; border-radius:10px;" />
+            <button type="button" class="outline" onclick="copyBox('shareAppUrlInput')">Copy</button>
+          </div>
         </div>
       </div>
       <div style="margin-top:18px; padding:14px; background:var(--sky); border-radius:12px; font-size:12px; color:var(--blue); text-align:left;">
-        <b>💡 Multi-Device Testing Tips:</b>
+        <b>⚡ Real-Time Multi-Device Sync Active:</b>
         <ul style="margin:6px 0 0; padding-left:18px; line-height:1.6;">
-          <li>Log in as <b>Kofi Mensah (Student)</b> on your phone and as <b>Dr. Ama Mensah (Lecturer)</b> on your computer.</li>
-          <li>Post an announcement or start a live video class on one device, and watch it show up on the other in real-time!</li>
-          <li>All course registrations, submissions, quizzes, and announcements synchronize automatically via Firebase Cloud Firestore.</li>
+          <li><b>Device 1 (e.g. Laptop):</b> Sign in as <b>Dr. Ama Mensah (Lecturer)</b>. Click <i>Add Course Level</i> to create a course (e.g. GIS400-P9M), create a live quiz, post an announcement, or start a video call.</li>
+          <li><b>Device 2 (e.g. Phone):</b> Sign in as <b>Kofi Mensah (Student)</b>. Click <i>Register Courses</i>, enter Dr. Ama's registration code, and immediately access all classwork, take quizzes, submit assignments, and join the video call!</li>
+          <li>All changes sync instantly through Firebase Cloud Firestore.</li>
         </ul>
       </div>
     </div>
@@ -1462,16 +1473,28 @@ async function handleSecureSignIn(e){
   }
 
   const passHash = await hashPassword(rawPass);
-  const found = db.users.find(u => {
+  let found = db.users.find(u => {
     if (u.role !== role) return false;
     if (role === 'student') {
       const passMatch = (u.passHash === passHash) || ((u.passHash === defaultPassHash) && (rawPass === "Password123!" || rawPass === "password" || rawPass === "demo"));
       return u.indexNo && u.indexNo.toLowerCase() === identifier.toLowerCase() && passMatch;
     } else {
       const passMatch = (u.passHash === passHash) || ((u.passHash === defaultPassHash) && (rawPass === "Password123!" || rawPass === "password" || rawPass === "demo"));
-      return u.email.toLowerCase() === identifier.toLowerCase() && passMatch;
+      return u.email && u.email.toLowerCase() === identifier.toLowerCase() && passMatch;
     }
   });
+
+  if (!found && typeof window.queryUserFromCloud === 'function') {
+    const cloudUser = await window.queryUserFromCloud(role, identifier);
+    if (cloudUser) {
+      const passMatch = (cloudUser.passHash === passHash) || ((cloudUser.passHash === defaultPassHash) && (rawPass === "Password123!" || rawPass === "password" || rawPass === "demo"));
+      if (passMatch) {
+        const idx = db.users.findIndex(u => String(u.id) === String(cloudUser.id));
+        if (idx >= 0) db.users[idx] = cloudUser; else db.users.push(cloudUser);
+        found = cloudUser;
+      }
+    }
+  }
 
   if(!found){
     if(!db.failedAttempts[lockoutKey]) db.failedAttempts[lockoutKey]={count:0, time:0};
@@ -1651,9 +1674,29 @@ function renderTabContent(tabId){
       <div class="panel" style="padding:20px"><h3 style="margin-top:0">My registered courses (${myCourses.length})</h3><div class="course-list">${myCourses.map(c=>`<div class="course" role="button" tabindex="0" style="cursor:pointer" onclick="openStudentCourse(${Number(c.id)})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openStudentCourse(${Number(c.id)})}"><div class="courseinfo"><strong>${esc(c.name)} (${esc(c.level)})</strong><small>Code: ${esc(c.code)} · ${(c.days||[]).map(esc).join(', ')}</small><small>Click to view this course's assignments and quizzes.</small></div><span class="pill">Open course →</span></div>`).join('')||'<div class="empty">No courses registered yet.</div>'}</div></div>
     `;
     const codeInput=document.getElementById('enrollCourseCode');
-    codeInput.addEventListener('input',()=>{
-      const c=courseByCode(codeInput.value);
-      document.getElementById('enrollCoursePreview').textContent=c?`${c.name} - ${c.level} · Code: ${c.code} · Lecturer: ${db.users.find(u=>u.id===c.ownerId)?.name||'Lecturer'}`:'No course matches this specific registration code.';
+    let _searchTimer = null;
+    codeInput.addEventListener('input', () => {
+      const val = codeInput.value.trim().toUpperCase();
+      let c = courseByCode(val);
+      const prevEl = document.getElementById('enrollCoursePreview');
+      if (c) {
+        if (prevEl) prevEl.innerHTML = `<span style="color:#059669;font-weight:700">✓ ${esc(c.name)} (${esc(c.level)})</span> · Code: <b>${esc(c.code)}</b> · Lecturer: ${esc(db.users.find(u=>u.id===c.ownerId)?.name||'Lecturer')}`;
+        return;
+      }
+      if (prevEl) prevEl.textContent = val.length >= 3 ? 'Checking course code in cloud…' : 'Enter a registration code to check matching class.';
+      clearTimeout(_searchTimer);
+      if (val.length >= 4 && typeof window.queryCourseFromCloud === 'function') {
+        _searchTimer = setTimeout(async () => {
+          const cloudCourse = await window.queryCourseFromCloud(val);
+          if (cloudCourse) {
+            const exists = db.courses.findIndex(x => String(x.id) === String(cloudCourse.id));
+            if (exists >= 0) db.courses[exists] = cloudCourse; else db.courses.push(cloudCourse);
+            if (prevEl) prevEl.innerHTML = `<span style="color:#059669;font-weight:700">✓ ${esc(cloudCourse.name)} (${esc(cloudCourse.level)})</span> · Code: <b>${esc(cloudCourse.code)}</b> · Ready to register!`;
+          } else {
+            if (prevEl) prevEl.textContent = 'No course matches this specific registration code.';
+          }
+        }, 350);
+      }
     });
   } else if(tabId==='lecturer-announcements'){
     container.innerHTML=renderAnnouncementsPage(true);
@@ -1918,13 +1961,31 @@ function openStudentCourse(courseId){
   document.querySelectorAll('#nav button').forEach(b=>b.classList.remove('active'));
 }
 
-function registerStudentCourse(event){
+async function registerStudentCourse(event){
   event.preventDefault();
   if(!db.user || db.user.role !== 'student') return;
-  const code = document.getElementById('enrollCourseCode').value.trim();
-  const course = courseByCode(code);
-  if(!course){ toast('Course code not found. Check with your lecturer for the correct level code.'); return; }
-  if(studentEnrollments(db.user.id).some(e=>e.courseId===course.id)){ toast('You are already registered for this class level.'); return; }
+  const codeEl = document.getElementById('enrollCourseCode');
+  const code = codeEl ? codeEl.value.trim() : '';
+  if(!code){ toast('Please enter a course registration code.'); return; }
+
+  let course = courseByCode(code);
+  if(!course && typeof window.queryCourseFromCloud === 'function'){
+    toast('Searching cloud for course ' + code.toUpperCase() + '…');
+    course = await window.queryCourseFromCloud(code);
+    if(course){
+      const exists = db.courses.findIndex(c => String(c.id) === String(course.id));
+      if(exists >= 0) db.courses[exists] = course; else db.courses.push(course);
+    }
+  }
+
+  if(!course){
+    toast('Course code not found. Check with your lecturer for the correct level code.');
+    return;
+  }
+  if(studentEnrollments(db.user.id).some(e=>String(e.courseId)===String(course.id))){
+    toast('You are already registered for this class level.');
+    return;
+  }
   
   const fullName=document.getElementById('enrollFullName').value.trim();
   const indexNo=document.getElementById('enrollIndexNo').value.trim();
@@ -1935,7 +1996,7 @@ function registerStudentCourse(event){
   const userIndex=db.users.findIndex(u=>u.id===db.user.id);
   if(userIndex>=0) db.users[userIndex]={...db.users[userIndex],name:fullName,indexNo,phone,level};
 
-  db.enrollments.push({
+  const enrollmentRecord = {
     id:'enroll_'+db.user.id+'_'+course.id,
     courseId:course.id,
     courseCode:course.code,
@@ -1945,10 +2006,23 @@ function registerStudentCourse(event){
     fullName, indexNo, phone, level,
     attendance:{}, marks:{},
     registeredAt:localDateString()
-  });
+  };
+
+  db.enrollments.push(enrollmentRecord);
   db.user.code=course.code;
   if(userIndex>=0) db.users[userIndex].code=course.code;
+  
   saveDB();
+
+  if(typeof window.syncToCloud === 'function'){
+    try {
+      await window.syncToCloud('enrollments', enrollmentRecord.id, enrollmentRecord);
+      if(db.user) await window.syncToCloud('users', db.user.id, db.user);
+    } catch(err) {
+      console.warn('Could not sync enrollment to cloud:', err);
+    }
+  }
+
   toast('Successfully registered for ' + course.name + ' (' + course.level + ')!');
   initAppForUser();
 }
@@ -2559,7 +2633,193 @@ const _st=window.switchTab;window.switchTab=function(t,b){window.mDetail=null;re
 })();
 
 </script>
+
+<!-- LectureHub Universal Real-Time Multi-Device Firebase Synchronization Module -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { 
+  getFirestore, 
+  doc, 
+  collection, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  query, 
+  where, 
+  onSnapshot 
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  projectId: "trusty-gearbox-h8f9p",
+  appId: "1:748023805602:web:7aa99fe1ae8e3c7b7689fb",
+  apiKey: "AIzaSyDz8OWRswzP75Y8Hx9LI5o5YjZgDoeQPFY",
+  authDomain: "trusty-gearbox-h8f9p.firebaseapp.com",
+  firestoreDatabaseId: "ai-studio-lecturehub-cc2540a3-fe97-4523-8749-32547fcb61b1",
+  storageBucket: "trusty-gearbox-h8f9p.firebasestorage.app",
+  messagingSenderId: "748023805602"
+};
+
+const app = initializeApp(firebaseConfig);
+const dbFirestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+window.dbFirestore = dbFirestore;
+
+function setCloudIndicator(synced, message) {
+  const el = document.getElementById('storageStatus');
+  if (el) {
+    el.innerHTML = synced
+      ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;margin-right:5px"></span>${message || 'Cloud Synced (Multi-Device)'}`
+      : `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#f59e0b;margin-right:5px"></span>${message || 'Syncing…'}`;
+  }
+}
+
+// Global Cloud Sync Function
+window.syncToCloud = async function(colName, id, data) {
+  if (!dbFirestore || !id || !colName) return;
+  try {
+    const docRef = doc(dbFirestore, colName, String(id));
+    const clean = JSON.parse(JSON.stringify(data));
+    // Guard against documents exceeding Firestore 1MB quota
+    if (clean.fileDataUrl && clean.fileDataUrl.length > 500000) {
+      clean.fileDataUrl = clean.fileDataUrl.slice(0, 250000);
+      clean.fileTruncatedForCloud = true;
+    }
+    await setDoc(docRef, clean, { merge: true });
+    setCloudIndicator(true, 'Cloud Synced (Multi-Device)');
+  } catch (err) {
+    console.warn(`[Firebase Sync Error] on ${colName}/${id}:`, err);
+  }
+};
+
+// Global Course Query by Code
+window.queryCourseFromCloud = async function(code) {
+  if (!dbFirestore || !code) return null;
+  const target = String(code).trim().toUpperCase();
+  try {
+    const q1 = query(collection(dbFirestore, 'courses'), where('code', '==', target));
+    const snap1 = await getDocs(q1);
+    if (!snap1.empty) {
+      const data = snap1.docs[0].data();
+      return data;
+    }
+    // Fallback: check all docs in courses collection for case differences or loose match
+    const allSnap = await getDocs(collection(dbFirestore, 'courses'));
+    for (const d of allSnap.docs) {
+      const c = d.data();
+      if (c && String(c.code || '').trim().toUpperCase() === target) {
+        return c;
+      }
+    }
+  } catch (err) {
+    console.warn('[Firebase Course Query Error]:', err);
+  }
+  return null;
+};
+
+// Global User Query by Identifier
+window.queryUserFromCloud = async function(role, identifier) {
+  if (!dbFirestore || !identifier) return null;
+  const cleanId = String(identifier).trim().toLowerCase();
+  try {
+    const colRef = collection(dbFirestore, 'users');
+    const allSnap = await getDocs(colRef);
+    for (const d of allSnap.docs) {
+      const u = d.data();
+      if (u && u.role === role) {
+        if (role === 'student' && u.indexNo && u.indexNo.trim().toLowerCase() === cleanId) return u;
+        if (u.email && u.email.trim().toLowerCase() === cleanId) return u;
+      }
+    }
+  } catch (err) {
+    console.warn('[Firebase User Query Error]:', err);
+  }
+  return null;
+};
+
+// Listen to all shared collections in real-time
+const SYNC_COLLECTIONS = [
+  'users',
+  'courses',
+  'enrollments',
+  'assignments',
+  'submissions',
+  'quizzes',
+  'quizAttempts',
+  'announcements',
+  'meetings'
+];
+
+SYNC_COLLECTIONS.forEach(colName => {
+  try {
+    const colRef = collection(dbFirestore, colName);
+    onSnapshot(colRef, (snapshot) => {
+      if (!window.db) return;
+      if (!Array.isArray(window.db[colName])) {
+        window.db[colName] = [];
+      }
+      const list = window.db[colName];
+      let hasChanges = false;
+
+      snapshot.docChanges().forEach(change => {
+        const item = change.doc.data();
+        if (!item || item.id === undefined) return;
+        const index = list.findIndex(x => String(x.id) === String(item.id));
+        if (change.type === 'removed') {
+          if (index >= 0) {
+            list.splice(index, 1);
+            hasChanges = true;
+          }
+        } else {
+          if (index >= 0) {
+            if (JSON.stringify(list[index]) !== JSON.stringify(item)) {
+              list[index] = { ...list[index], ...item };
+              hasChanges = true;
+            }
+          } else {
+            list.push(item);
+            hasChanges = true;
+          }
+        }
+      });
+
+      if (hasChanges) {
+        try {
+          localStorage.setItem('lecturehub_multi_level_sec_v13', JSON.stringify(window.db));
+        } catch (e) {}
+        setCloudIndicator(true, 'Multi-Device Sync Online');
+        if (typeof window.renderTabContent === 'function' && window.currentTab) {
+          window.renderTabContent(window.currentTab);
+        }
+      }
+    }, (err) => {
+      console.warn(`[Firebase Realtime Error] on ${colName}:`, err);
+    });
+  } catch (err) {
+    console.warn(`[Firebase Subscribe Error] on ${colName}:`, err);
+  }
+});
+
+// Seed Sync: Ensure existing lecturer courses, initial meetings & assignments exist in Firestore
+setTimeout(async () => {
+  try {
+    if (!window.db) return;
+    setCloudIndicator(false, 'Connecting to Cloud Firestore…');
+    for (const col of SYNC_COLLECTIONS) {
+      const items = Array.isArray(window.db[col]) ? window.db[col] : [];
+      for (const item of items) {
+        if (item && item.id !== undefined && item.id !== null) {
+          await window.syncToCloud(col, item.id, item);
+        }
+      }
+    }
+    setCloudIndicator(true, 'Cloud Synchronized · Multi-Device Online');
+    console.log('[LectureHub] Firestore multi-device synchronization active.');
+  } catch (e) {
+    console.warn('[Seed Sync Error]', e);
+  }
+}, 800);
+</script>
+
 <div id="root" style="display:none;"></div>
-<script type="module" src="/src/main.tsx"></script>
+<script type="module" src="./src/main.tsx"></script>
 </body>
 </html>

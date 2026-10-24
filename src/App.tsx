@@ -12,12 +12,17 @@ declare global {
     saveDB: () => void;
     renderTabContent: (tabId: string) => void;
     currentTab: string;
-    syncToCloud: (colName: string, id: string | number, data: any) => Promise<void>;
+    syncToCloud?: (colName: string, id: string | number, data: any) => Promise<void>;
   }
 }
 
 export default function App() {
   useEffect(() => {
+    if (typeof window.syncToCloud === 'function') {
+      console.log('[LectureHub App] Cloud sync already running from Firebase module.');
+      return;
+    }
+
     // Expose cloud sync method globally for index.html handlers
     window.syncToCloud = async (colName: string, id: string | number, data: any) => {
       await syncRecordToCloud(colName, id, data);

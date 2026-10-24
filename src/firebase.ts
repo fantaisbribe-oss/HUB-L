@@ -9,7 +9,16 @@ import {
   getDocFromServer,
   onSnapshot 
 } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+export const firebaseConfig = {
+  projectId: "trusty-gearbox-h8f9p",
+  appId: "1:748023805602:web:7aa99fe1ae8e3c7b7689fb",
+  apiKey: "AIzaSyDz8OWRswzP75Y8Hx9LI5o5YjZgDoeQPFY",
+  authDomain: "trusty-gearbox-h8f9p.firebaseapp.com",
+  firestoreDatabaseId: "ai-studio-lecturehub-cc2540a3-fe97-4523-8749-32547fcb61b1",
+  storageBucket: "trusty-gearbox-h8f9p.firebasestorage.app",
+  messagingSenderId: "748023805602",
+  measurementId: ""
+};
 
 // Initialize Firebase App
 export const firebaseApp = initializeApp({
@@ -22,7 +31,7 @@ export const firebaseApp = initializeApp({
   measurementId: firebaseConfig.measurementId,
 });
 
-// Initialize Firestore with specific database ID if provided
+// Initialize Firestore with specific database ID
 export const firestoreDb = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
   ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId)
   : getFirestore(firebaseApp);
@@ -37,8 +46,10 @@ export async function testConnection(): Promise<boolean> {
     await getDocFromServer(doc(firestoreDb, 'test', 'connection'));
     isFirebaseOnline = true;
     console.log('[LectureHub Firebase] Cloud Firestore connection verified successfully.');
-    const el = document.getElementById('storageStatus');
-    if (el) el.textContent = 'Cloud Synchronized · Firebase Firestore Online';
+    if (typeof document !== 'undefined') {
+      const el = document.getElementById('storageStatus');
+      if (el) el.textContent = 'Cloud Synchronized · Firebase Firestore Online';
+    }
     return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
@@ -46,8 +57,10 @@ export async function testConnection(): Promise<boolean> {
     } else {
       console.log('[LectureHub Firebase] Firestore connected (ready for documents).');
       isFirebaseOnline = true;
-      const el = document.getElementById('storageStatus');
-      if (el) el.textContent = 'Cloud Synchronized · Firebase Firestore';
+      if (typeof document !== 'undefined') {
+        const el = document.getElementById('storageStatus');
+        if (el) el.textContent = 'Cloud Synchronized · Firebase Firestore';
+      }
     }
     return false;
   }
