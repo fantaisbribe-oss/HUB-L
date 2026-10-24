@@ -60,6 +60,17 @@ service cloud.firestore {
       allow write: if true;
     }
 
+    // WebRTC live video room metadata and signaling
+    match /calls/{callId} {
+      allow read, write: if true;
+      match /signals/{signalId} {
+        allow read, write: if true;
+      }
+      match /participants/{participantId} {
+        allow read, write: if true;
+      }
+    }
+
     // Test connection doc
     match /test/{docId} {
       allow read, write: if true;

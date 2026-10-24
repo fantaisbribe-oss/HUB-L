@@ -170,6 +170,22 @@
         "accessCode": { "type": "string", "description": "6-character access code" }
       },
       "required": ["title", "courseCode", "accessCode"]
+    },
+    "CallSession": {
+      "title": "CallSession",
+      "description": "Active WebRTC video call room with real-time signaling",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "Unique room access code" },
+        "hostId": { "type": "number", "description": "Lecturer UID" },
+        "hostName": { "type": "string", "description": "Host full name" },
+        "title": { "type": "string", "description": "Class session title" },
+        "courseCode": { "type": "string", "description": "Associated course code" },
+        "active": { "type": "boolean", "description": "Whether call is live" },
+        "startedAt": { "type": "number", "description": "Start epoch timestamp" },
+        "updatedAt": { "type": "number", "description": "Update epoch timestamp" }
+      },
+      "required": ["code", "title", "active"]
     }
   },
   "firestore": {
@@ -208,6 +224,10 @@
     "/meetings/{meetingId}": {
       "schema": { "$ref": "#/entities/Meeting" },
       "description": "Live video classroom sessions and access codes"
+    },
+    "/calls/{callId}": {
+      "schema": { "$ref": "#/entities/CallSession" },
+      "description": "WebRTC room sessions and live signaling records"
     }
   }
 }

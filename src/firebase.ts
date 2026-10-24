@@ -5,9 +5,11 @@ import {
   collection, 
   doc, 
   setDoc, 
+  getDoc,
   getDocs, 
   getDocFromServer,
-  onSnapshot 
+  onSnapshot,
+  addDoc 
 } from 'firebase/firestore';
 export const firebaseConfig = {
   projectId: "trusty-gearbox-h8f9p",
@@ -143,5 +145,111 @@ export function startFirebaseSync(
 
   return () => {
     unsubscribers.forEach((unsub) => unsub());
+  };
+}
+
+// WebRTC Signaling Interface for Multi-Device Video Calls
+export interface CallSignal {
+  from: string;
+  fromName: string;
+  to: string; // recipient peerId or 'all' or 'host'
+  type: 'join' | 'offer' | 'answer' | 'candidate' | 'bye' | 'state' | 'chat';
+  payload: any;
+  timestamp: number;
+}
+
+export async function initCallRoom(roomCode: string, roomData: Record<string, any>) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const roomRef = doc(firestoreDb, 'calls', cleanCode);
+  await setDoc(roomRef, {
+    ...roomData,
+    code: cleanCode,
+    active: true,
+    updatedAt: Date.now()
+  }, { merge: true });
+}
+
+export async function getCallRoom(roomCode: string) {
+  if (!firestoreDb) return null;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const snap = await getDoc(doc(firestoreDb, 'calls', cleanCode));
+  return snap.exists() ? snap.data() : null;
+}
+
+export async function sendCallSignal(roomCode: string, signal: CallSignal) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const signalsRef = collection(firestoreDb, 'calls', cleanCode, 'signals');
+  await addDoc(signalsRef, {
+    ...signal,
+    timestamp: Date.now()
+  });
+}
+
+export function listenCallSignals(
+  roomCode: string, 
+  myPeerId: string, 
+  onSignal: (signal: CallSignal, signalId: string) => void
+) {
+  if (!firestoreDb) return () => {};
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const signalsRef = collection(firestoreDb, 'calls', cleanCode, 'signals');
+  const seenSignalIds = new Set<string>();
+
+  const unsub = onSnapshot(signalsRef, (snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === 'added') {
+        const id = change.doc.id;
+        if (seenSignalIds.has(id)) return;
+        seenSignalIds.add(id);
+        const data = change.doc.data() as CallSignal;
+        // Ignore signals sent by myself
+        if (data.from === myPeerId) return;
+        // Ignore signals specifically addressed to another peer
+        if (data.to && data.to !== myPeerId && data.to !== 'all' && data.to !== 'host') {
+          return;
+        }
+        onSignal(data, id);
+      }
+    });
+  }, (err) => {
+    console.warn(`[LectureHub Signaling Error] on room ${cleanCode}:`, err);
+  });
+
+  return unsub;
+}
+
+export async function leaveCallRoom(roomCode: string, myPeerId: string, isHost: boolean) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  try {
+    await sendCallSignal(cleanCode, {
+      from: myPeerId,
+      fromName: 'Leaving',
+      to: 'all',
+      type: 'bye',
+      payload: {},
+      timestamp: Date.now()
+    });
+    if (isHost) {
+      await setDoc(doc(firestoreDb, 'calls', cleanCode), {
+        active: false,
+        endedAt: Date.now()
+      }, { merge: true });
+    }
+  } catch (e) {
+    console.warn('[LectureHub Signaling] error on leaving room:', e);
+  }
+}
+
+// Expose on window for client scripts
+if (typeof window !== 'undefined') {
+  (window as any).lhSignaling = {
+    initCallRoom,
+    getCallRoom,
+    sendCallSignal,
+    listenCallSignals,
+    leaveCallRoom
   };
 }
