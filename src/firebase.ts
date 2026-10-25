@@ -242,6 +242,17 @@ export interface CallMessage {
   timestamp: number;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([
+    promise.then(res => { clearTimeout(timer); return res; }),
+    timeoutPromise
+  ]);
+}
+
 export async function initCallRoom(roomCode: string, roomData: Record<string, any>) {
   if (!firestoreDb) {
     throw new Error('Firestore database is not initialized. Please check network connection.');
@@ -249,13 +260,17 @@ export async function initCallRoom(roomCode: string, roomData: Record<string, an
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const roomRef = doc(firestoreDb, 'calls', cleanCode);
   try {
-    await setDoc(roomRef, {
-      ...roomData,
-      code: cleanCode,
-      active: true,
-      chatEnabled: roomData.chatEnabled !== false,
-      updatedAt: Date.now()
-    }, { merge: true });
+    await withTimeout(
+      setDoc(roomRef, {
+        ...roomData,
+        code: cleanCode,
+        active: true,
+        chatEnabled: roomData.chatEnabled !== false,
+        updatedAt: Date.now()
+      }, { merge: true }),
+      9000,
+      'Room initialization timed out. Please check your network and tap Retry.'
+    );
     console.log(`[Firebase Call Room] initCallRoom succeeded for room ${cleanCode}`);
   } catch (err: any) {
     console.error(`[Firebase Call Room] initCallRoom failed for room ${cleanCode}:`, err);
@@ -286,7 +301,11 @@ export async function getCallRoom(roomCode: string) {
   }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   try {
-    const snap = await getDoc(doc(firestoreDb, 'calls', cleanCode));
+    const snap = await withTimeout(
+      getDoc(doc(firestoreDb, 'calls', cleanCode)),
+      8000,
+      'Could not reach classroom server within 8 seconds. Please check your internet connection.'
+    );
     return snap.exists() ? snap.data() : null;
   } catch (err: any) {
     console.error(`[Firebase Call Room] getCallRoom lookup failed for room ${cleanCode}:`, err);
@@ -324,10 +343,14 @@ export async function registerParticipant(roomCode: string, participant: CallPar
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const partRef = doc(firestoreDb, 'calls', cleanCode, 'participants', participant.id);
   try {
-    await setDoc(partRef, {
-      ...participant,
-      updatedAt: Date.now()
-    }, { merge: true });
+    await withTimeout(
+      setDoc(partRef, {
+        ...participant,
+        updatedAt: Date.now()
+      }, { merge: true }),
+      9000,
+      'Participant registration timed out. Please check your network and tap Retry.'
+    );
     console.log(`[Firebase Call Room] registerParticipant succeeded for ${participant.id} in room ${cleanCode}`);
   } catch (err: any) {
     console.error(`[Firebase Call Room] registerParticipant failed for room ${cleanCode}:`, err);

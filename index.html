@@ -940,7 +940,16 @@ function ensureSchema(){
   saveDB();
 }
 
-function courseByCode(code){return db.courses.find(c=>String(c.code||'').trim().toUpperCase()===String(code||'').trim().toUpperCase());}
+function courseByCode(code) {
+  if (!code) return null;
+  const raw = String(code).trim().toUpperCase();
+  const norm = typeof normCode === 'function' ? normCode(code) : raw.replace(/[^A-Z0-9]/g, '');
+  return (db.courses || []).find(c => {
+    const cRaw = String(c.code || '').trim().toUpperCase();
+    const cNorm = (typeof normCode === 'function' ? normCode(c.code || '') : cRaw.replace(/[^A-Z0-9]/g, ''));
+    return cRaw === raw || (norm && cNorm === norm) || (c.id && String(c.id) === raw);
+  });
+}
 function studentEnrollments(studentId){return (db.enrollments||[]).filter(e=>String(e.studentId)===String(studentId));}
 function getStudentCourses(studentId){const ids=studentEnrollments(studentId).map(e=>e.courseId);return db.courses.filter(c=>ids.includes(c.id));}
 function formatTime(t){if(!t)return 'Time not set';const [h,m]=t.split(':').map(Number);return new Date(2000,0,1,h||0,m||0).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});}
@@ -3040,8 +3049,10 @@ async function joinByCode() {
     joinBtn.innerHTML = '<span>⏳</span><span>Checking session…</span>';
   }
 
+  const isLecturer = db.user && (db.user.role === 'lecturer' || db.user.role === 'admin');
+
   try {
-    await startCall(code, false);
+    await startCall(code, isLecturer);
   } finally {
     const btnAfter = document.getElementById('joinCallBtn');
     if (btnAfter && !CALL.room) {
@@ -3141,16 +3152,16 @@ function cleanupCallAttemptResources() {
 }
 
 // Centralized Call-Initialization Failure & Rollback Handler
-function handleCallInitFailure(code, error, userMessage) {
+function handleCallInitFailure(code, error, userMessage, wasHost = false) {
   console.error('[Call Init Failure]', code, error);
 
   cleanupCallAttemptResources();
 
   // Display user-friendly failure card with retry
-  showCallFailureView(code, error, userMessage);
+  showCallFailureView(code, error, userMessage, wasHost);
 }
 
-function showCallFailureView(code, error, userMessage) {
+function showCallFailureView(code, error, userMessage, wasHost = false) {
   const c = document.getElementById('appContent');
   if (!c) return;
 
@@ -3187,7 +3198,7 @@ function showCallFailureView(code, error, userMessage) {
       </p>
       ${failedStage}
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:20px;">
-        <button class="primary" style="min-height:50px;padding:0 24px;border-radius:14px;font-weight:700;" onclick="startCall('${esc(code || '')}', ${CALL.isHost ? 'true' : 'false'})">
+        <button class="primary" style="min-height:50px;padding:0 24px;border-radius:14px;font-weight:700;" onclick="startCall('${esc(code || '')}', ${wasHost ? 'true' : 'false'})">
           🔄 Retry Connection
         </button>
         <button class="outline" style="min-height:50px;padding:0 20px;border-radius:14px;" onclick="renderMeetingTab(document.getElementById('appContent'))">
@@ -3198,7 +3209,7 @@ function showCallFailureView(code, error, userMessage) {
   `;
 }
 
-function showWaitingForLecturerView(code, meetingRecord) {
+function showWaitingForLecturerView(code, meetingRecord, courseObj) {
   const c = document.getElementById('appContent');
   if (!c) return;
 
@@ -3209,7 +3220,7 @@ function showWaitingForLecturerView(code, meetingRecord) {
   }
   CALL.isJoining = false;
 
-  const title = meetingRecord ? meetingRecord.title : 'Live Classroom';
+  const title = (meetingRecord && meetingRecord.title) || (courseObj ? `${courseObj.name} (${courseObj.code})` : 'Live Classroom');
   c.innerHTML = `
     <div class="panel" style="max-width:520px;margin:28px auto;text-align:center;padding:34px 24px;border-radius:20px;">
       <div style="width:68px;height:68px;border-radius:20px;background:#eff6ff;color:#2563eb;display:grid;place-items:center;font-size:32px;margin:0 auto 16px;">⏳</div>
@@ -3242,7 +3253,8 @@ function showWaitingForLecturerView(code, meetingRecord) {
           CALL.unsubRoom = null;
         }
         toast('Lecturer started the session! Connecting now…');
-        startCall(code, false);
+        const isLecturer = db.user && (db.user.role === 'lecturer' || db.user.role === 'admin');
+        startCall(code, isLecturer);
       }
     }, (err) => {
       console.warn('[Waiting Room Listener Warning]', err);
@@ -3256,7 +3268,8 @@ async function checkWaitingSessionAgain(code) {
     CALL.unsubRoom = null;
   }
   CALL.isJoining = false;
-  await startCall(code, false);
+  const isLecturer = db.user && (db.user.role === 'lecturer' || db.user.role === 'admin');
+  await startCall(code, isLecturer);
 }
 
 function cancelWaitingForLecturer() {
@@ -3324,7 +3337,14 @@ async function startCall(codeIn, asHost) {
       CALL.unsubRoom = null;
     }
 
-    const meetingRecord = (db.meetings || []).find(m => normCode(m.accessCode) === code);
+    // 1. Resolve local meeting record and course
+    let meetingRecord = (db.meetings || []).find(m => normCode(m.accessCode) === code);
+    let matchedCourse = courseByCode(code);
+    if (!meetingRecord && matchedCourse) {
+      meetingRecord = (db.meetings || []).find(m => m.courseCode && normCode(m.courseCode) === normCode(matchedCourse.code));
+    }
+
+    // 2. Cloud lookup in Firestore
     let cloudRoom = null;
     let cloudLookupError = null;
 
@@ -3342,34 +3362,96 @@ async function startCall(codeIn, asHost) {
       throw new Error(`Could not reach live classroom server: ${cloudLookupError.message || 'Network connection failed'}`);
     }
 
-    const targetCourseCode = (meetingRecord && meetingRecord.courseCode) || (cloudRoom && cloudRoom.courseCode) || '';
-    const roomTitle = (meetingRecord && meetingRecord.title) || (cloudRoom && cloudRoom.title) || 'Live Classroom';
+    // 3. Resolve Target Course Code & Course Object
+    let targetCourseCode = (meetingRecord && meetingRecord.courseCode) || (cloudRoom && cloudRoom.courseCode) || (matchedCourse && matchedCourse.code) || '';
+    let course = targetCourseCode ? courseByCode(targetCourseCode) : (matchedCourse || null);
 
-    if (!asHost) {
-      // Outcome 1: Session does not exist anywhere
-      if (!meetingRecord && !cloudRoom) {
+    // If course not found in memory, attempt cloud lookup
+    if (!course && targetCourseCode && typeof window.queryCourseFromCloud === 'function') {
+      try {
+        const cloudCourse = await window.queryCourseFromCloud(targetCourseCode);
+        if (cloudCourse) {
+          const idx = (db.courses || []).findIndex(c => String(c.id) === String(cloudCourse.id));
+          if (idx >= 0) db.courses[idx] = cloudCourse;
+          else (db.courses = db.courses || []).push(cloudCourse);
+          saveDB();
+          course = cloudCourse;
+        }
+      } catch (e) {
+        console.warn('[startCall] Cloud course query failed:', e);
+      }
+    }
+
+    const roomTitle = (meetingRecord && meetingRecord.title) || (cloudRoom && cloudRoom.title) || (course ? `${course.name} (${course.code})` : 'Live Classroom');
+
+    // 4. Role & Host Authorization Determination
+    const currentUser = db.user;
+    const isLecturerUser = currentUser && (currentUser.role === 'lecturer' || currentUser.role === 'admin');
+    const isStudentUser = currentUser && currentUser.role === 'student';
+
+    const isCourseOwner = course && (
+      String(course.ownerId) === String(currentUser.id) ||
+      String(course.lecturerId) === String(currentUser.id) ||
+      (course.lecturerEmail && course.lecturerEmail.toLowerCase() === (currentUser.email || '').toLowerCase()) ||
+      (course.lecturer && String(course.lecturer).toLowerCase() === String(currentUser.name || '').toLowerCase())
+    );
+    const isMeetingOwner = meetingRecord && String(meetingRecord.ownerId) === String(currentUser.id);
+    const isCloudHost = cloudRoom && String(cloudRoom.hostId) === String(currentUser.id);
+
+    // Determine if this user is acting as Host:
+    // Authorized lecturer starting/resuming a session:
+    const effectiveAsHost = isLecturerUser && (
+      asHost === true ||
+      isMeetingOwner ||
+      isCourseOwner ||
+      isCloudHost ||
+      (!cloudRoom || !cloudRoom.active || String(cloudRoom.hostId) === String(currentUser.id))
+    );
+
+    // 5. Authorization & Enrollment Enforcement
+    if (!effectiveAsHost) {
+      // Must be a valid existing session, cloud room, or course
+      if (!meetingRecord && !cloudRoom && !matchedCourse) {
         throw new Error(`Session code "${showCode(code)}" was not found. Please verify the code with your lecturer.`);
       }
 
-      // Course enrollment check
-      if (targetCourseCode) {
-        const course = courseByCode(targetCourseCode);
-        if (course && typeof studentEnrollments === 'function') {
-          const isEnrolled = studentEnrollments(db.user.id).some(e => String(e.courseId) === String(course.id));
+      // If user is a student, enforce legitimate enrollment check
+      if (isStudentUser && course) {
+        if (typeof studentEnrollments === 'function') {
+          const isEnrolled = studentEnrollments(currentUser.id).some(e => 
+            String(e.courseId) === String(course.id) || 
+            (e.courseCode && String(e.courseCode).trim().toUpperCase() === String(course.code).trim().toUpperCase())
+          );
           if (!isEnrolled) {
             throw new Error(`Access Restricted: You are not enrolled in ${course.code} (${course.name}). Please register for this course first.`);
           }
         }
       }
 
-      // Outcome 2: Session exists but is confirmed inactive
+      // Outcome: If room is not yet active, show waiting screen
       const isRoomActive = cloudRoom && cloudRoom.active === true;
       if (!isRoomActive) {
         CALL.isJoining = false;
-        showWaitingForLecturerView(code, meetingRecord);
+        showWaitingForLecturerView(code, meetingRecord, course);
         return;
       }
-      // Outcome 3: Session is active and authorized! Proceed...
+    } else {
+      // Authorized lecturer/host starting or reopening the session!
+      if (!meetingRecord && isLecturerUser) {
+        meetingRecord = {
+          id: id(),
+          ownerId: currentUser.id,
+          courseCode: targetCourseCode || (course ? course.code : code),
+          title: roomTitle,
+          accessCode: code
+        };
+        if (!Array.isArray(db.meetings)) db.meetings = [];
+        db.meetings.push(meetingRecord);
+        saveDB();
+        if (typeof window.syncToCloud === 'function') {
+          window.syncToCloud('meetings', meetingRecord.id, meetingRecord);
+        }
+      }
     }
 
     // Stage 2: Requesting media
@@ -3378,12 +3460,12 @@ async function startCall(codeIn, asHost) {
     acquiredStream = stream;
 
     // Stage 3: Initializing call state
-    updateCallStage('Initializing room', asHost ? 'Opening live classroom' : 'Preparing interface');
+    updateCallStage('Initializing room', effectiveAsHost ? 'Opening live classroom' : 'Preparing interface');
     CALL.room = code;
     CALL.roomTitle = roomTitle;
     CALL.courseCode = targetCourseCode;
-    CALL.me = (asHost ? 'host_' : 'stu_') + db.user.id + '_' + Math.random().toString(36).slice(2, 7);
-    CALL.isHost = !!asHost;
+    CALL.me = (effectiveAsHost ? 'host_' : 'stu_') + db.user.id + '_' + Math.random().toString(36).slice(2, 7);
+    CALL.isHost = !!effectiveAsHost;
     CALL.status = 'connecting';
     CALL.peers = {};
     CALL.participants = [];
@@ -3406,10 +3488,10 @@ async function startCall(codeIn, asHost) {
 
     // Render classroom UI now that media and authorization succeeded
     renderMeetingTab(document.getElementById('appContent'));
-    toast(asHost ? 'Starting session & opening cloud room…' : 'Connecting to live class…');
+    toast(effectiveAsHost ? 'Starting session & opening cloud room…' : 'Connecting to live class…');
 
     // Stage 4: Initializing cloud room (if lecturer)
-    if (window.lhSignaling && asHost) {
+    if (window.lhSignaling && effectiveAsHost) {
       updateCallStage('Initializing room', 'Publishing cloud session');
       await window.lhSignaling.initCallRoom(code, {
         hostId: db.user.id,
@@ -3424,11 +3506,11 @@ async function startCall(codeIn, asHost) {
 
     // Stage 5: Registering participant presence
     if (window.lhSignaling) {
-      updateCallStage('Registering participant', `${db.user.name} (${asHost ? 'Host' : 'Student'})`);
+      updateCallStage('Registering participant', `${db.user.name} (${effectiveAsHost ? 'Host' : 'Student'})`);
       await window.lhSignaling.registerParticipant(code, {
         id: CALL.me,
         name: db.user.name,
-        role: asHost ? 'host' : 'student',
+        role: effectiveAsHost ? 'host' : 'student',
         joinedAt: Date.now(),
         status: 'active',
         cam: CALL.cam,
@@ -3445,7 +3527,7 @@ async function startCall(codeIn, asHost) {
       // Room metadata updates
       CALL.unsubRoom = window.lhSignaling.listenCallRoom(code, (roomData) => {
         if (!roomData) return;
-        if (!asHost && roomData.active === false) {
+        if (!effectiveAsHost && roomData.active === false) {
           CALL.status = 'ended';
           drawStatusBadge();
           toast('The lecturer has ended this live session.');
@@ -3474,7 +3556,7 @@ async function startCall(codeIn, asHost) {
       });
 
       // WebRTC signals
-      CALL.unsubSignals = window.lhSignaling.listenCallSignals(code, CALL.me, asHost, CALL.t0, onIncomingSignal, (err) => {
+      CALL.unsubSignals = window.lhSignaling.listenCallSignals(code, CALL.me, effectiveAsHost, CALL.t0, onIncomingSignal, (err) => {
         console.warn('[Signals Listener Warning]', err);
       });
 
@@ -3493,7 +3575,7 @@ async function startCall(codeIn, asHost) {
     }
 
     // Stage 7: Finalize classroom stage & WebRTC readiness
-    updateCallStage('Waiting for remote participant', asHost ? 'Class ready for students' : 'Connecting to lecturer');
+    updateCallStage('Waiting for remote participant', effectiveAsHost ? 'Class ready for students' : 'Connecting to lecturer');
 
     // Flush any signals received during initialization
     await flushPendingSignals();
@@ -3523,7 +3605,8 @@ async function startCall(codeIn, asHost) {
       acquiredStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
     }
     const failedStage = CALL.initStage || 'Connection startup';
-    handleCallInitFailure(code, err, `${failedStage} failed: ${err.message || 'Unexpected connection error'}`);
+    const isLecturerUser = db.user && (db.user.role === 'lecturer' || db.user.role === 'admin');
+    handleCallInitFailure(code, err, `${failedStage} failed: ${err.message || 'Unexpected connection error'}`, isLecturerUser);
     CALL.isJoining = false;
   }
 }
@@ -3540,7 +3623,7 @@ function syncLocalVideoElement() {
     localTile.className = 'video-box';
     localTile.style.cssText = 'position:relative;background:#111827;border-radius:16px;border:2px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;transition:all .2s ease;';
     localTile.innerHTML = `
-      <video id="video_me" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;${!CALL.sharing ? 'transform:scaleX(-1);' : ''}"></video>
+      <video id="video_me" autoplay playsinline webkit-playsinline muted style="width:100%;height:100%;object-fit:cover;${!CALL.sharing ? 'transform:scaleX(-1);' : ''}"></video>
       <div id="cam_off_me" class="cam-off" style="position:absolute;inset:0;background:#0f172a;display:${CALL.cam ? 'none' : 'grid'};place-items:center;">
         <div style="text-align:center;">
           <div style="width:68px;height:68px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#38bdf8);color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 10px;box-shadow:0 8px 20px rgba(37,99,235,0.3);">
@@ -3564,9 +3647,15 @@ function syncLocalVideoElement() {
 
   const v = document.getElementById('video_me');
   if (v) {
+    v.muted = true;
+    v.defaultMuted = true;
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    v.setAttribute('webkit-playsinline', '');
     const desiredStream = CALL.sharing ? CALL.screen : CALL.stream;
     if (v.srcObject !== desiredStream) {
       v.srcObject = desiredStream;
+      v.play().catch(e => console.warn('[Local Video Play]', e));
     }
   }
 
@@ -3598,7 +3687,7 @@ function syncPeerVideoElement(peerId, stream) {
     const ini = String(peer.name || '?').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
 
     peerTile.innerHTML = `
-      <video id="video_${peerId}" autoplay playsinline style="width:100%;height:100%;object-fit:cover;"></video>
+      <video id="video_${peerId}" autoplay playsinline webkit-playsinline style="width:100%;height:100%;object-fit:cover;"></video>
       <div id="cam_off_${peerId}" class="cam-off" style="position:absolute;inset:0;background:#0f172a;display:${peer.connectionState === 'connected' && peer.cam ? 'none' : 'grid'};place-items:center;">
         <div style="text-align:center;">
           <div style="width:68px;height:68px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 10px;box-shadow:0 8px 20px rgba(29,78,216,0.3);">${esc(ini)}</div>
@@ -3626,6 +3715,9 @@ function syncPeerVideoElement(peerId, stream) {
 
   const v = document.getElementById(`video_${peerId}`);
   if (v && stream && v.srcObject !== stream) {
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    v.setAttribute('webkit-playsinline', '');
     v.srcObject = stream;
     playRemoteAudio();
   }
