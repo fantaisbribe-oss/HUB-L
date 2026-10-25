@@ -182,10 +182,25 @@
         "title": { "type": "string", "description": "Class session title" },
         "courseCode": { "type": "string", "description": "Associated course code" },
         "active": { "type": "boolean", "description": "Whether call is live" },
+        "chatEnabled": { "type": "boolean", "description": "Whether class chat is enabled" },
         "startedAt": { "type": "number", "description": "Start epoch timestamp" },
         "updatedAt": { "type": "number", "description": "Update epoch timestamp" }
       },
       "required": ["code", "title", "active"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Synchronized real-time classroom chat message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique message ID" },
+        "senderId": { "type": "string", "description": "Sender peer ID or user ID" },
+        "senderName": { "type": "string", "description": "Sender display name" },
+        "senderRole": { "type": "string", "description": "host or student" },
+        "text": { "type": "string", "description": "Message text" },
+        "timestamp": { "type": "number", "description": "Message sent epoch timestamp" }
+      },
+      "required": ["senderId", "senderName", "text", "timestamp"]
     }
   },
   "firestore": {
@@ -228,6 +243,10 @@
     "/calls/{callId}": {
       "schema": { "$ref": "#/entities/CallSession" },
       "description": "WebRTC room sessions and live signaling records"
+    },
+    "/calls/{callId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Synchronized real-time classroom chat messages"
     }
   }
 }

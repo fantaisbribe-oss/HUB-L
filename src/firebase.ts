@@ -215,7 +215,7 @@ export interface CallSignal {
   from: string;
   fromName: string;
   to: string; // recipient peerId or 'all' or 'host'
-  type: 'join' | 'offer' | 'answer' | 'candidate' | 'bye' | 'state' | 'chat';
+  type: 'join' | 'offer' | 'answer' | 'description' | 'candidate' | 'bye' | 'state' | 'chat' | 'reaction' | 'mute_request' | 'lower_hand' | 'announcement';
   payload: any;
   timestamp: number;
 }
@@ -228,6 +228,18 @@ export interface CallParticipant {
   status: 'active' | 'left';
   cam?: boolean;
   mic?: boolean;
+  hand?: boolean;
+  handRaisedAt?: number | null;
+  speaking?: boolean;
+}
+
+export interface CallMessage {
+  id?: string;
+  senderId: string;
+  senderName: string;
+  senderRole: 'host' | 'student';
+  text: string;
+  timestamp: number;
 }
 
 export async function initCallRoom(roomCode: string, roomData: Record<string, any>) {
@@ -238,6 +250,17 @@ export async function initCallRoom(roomCode: string, roomData: Record<string, an
     ...roomData,
     code: cleanCode,
     active: true,
+    chatEnabled: roomData.chatEnabled !== false,
+    updatedAt: Date.now()
+  }, { merge: true });
+}
+
+export async function updateCallRoom(roomCode: string, updates: Record<string, any>) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const roomRef = doc(firestoreDb, 'calls', cleanCode);
+  await setDoc(roomRef, {
+    ...updates,
     updatedAt: Date.now()
   }, { merge: true });
 }
@@ -274,6 +297,20 @@ export async function registerParticipant(roomCode: string, participant: CallPar
   }, { merge: true });
 }
 
+export async function updateParticipantState(roomCode: string, participantId: string, updates: Partial<CallParticipant>) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const partRef = doc(firestoreDb, 'calls', cleanCode, 'participants', participantId);
+  try {
+    await setDoc(partRef, {
+      ...updates,
+      updatedAt: Date.now()
+    }, { merge: true });
+  } catch (e) {
+    console.warn('[LectureHub] updateParticipantState error:', e);
+  }
+}
+
 export async function removeParticipant(roomCode: string, participantId: string) {
   if (!firestoreDb) return;
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -296,6 +333,13 @@ export function listenParticipants(roomCode: string, onUpdate: (participants: Ca
       if (p.status !== 'left') {
         list.push(p);
       }
+    });
+    // Sort: Hand raised participants first (by timestamp), then alphabetically by name
+    list.sort((a, b) => {
+      if (a.hand && !b.hand) return -1;
+      if (!a.hand && b.hand) return 1;
+      if (a.hand && b.hand) return (a.handRaisedAt || 0) - (b.handRaisedAt || 0);
+      return (a.name || '').localeCompare(b.name || '');
     });
     onUpdate(list);
   }, (err) => {
@@ -358,6 +402,42 @@ export function listenCallSignals(
   return unsub;
 }
 
+export async function sendCallMessage(roomCode: string, message: CallMessage) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const msgCol = collection(firestoreDb, 'calls', cleanCode, 'messages');
+  await addDoc(msgCol, {
+    ...message,
+    timestamp: message.timestamp || Date.now()
+  });
+}
+
+export function listenCallMessages(
+  roomCode: string,
+  onMessage: (message: CallMessage, messageId: string) => void
+) {
+  if (!firestoreDb) return () => {};
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const msgCol = collection(firestoreDb, 'calls', cleanCode, 'messages');
+  const seenMessageIds = new Set<string>();
+
+  const unsub = onSnapshot(msgCol, (snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === 'added') {
+        const id = change.doc.id;
+        if (seenMessageIds.has(id)) return;
+        seenMessageIds.add(id);
+        const data = change.doc.data() as CallMessage;
+        onMessage({ ...data, id }, id);
+      }
+    });
+  }, (err) => {
+    console.warn(`[LectureHub Messages Error] on room ${cleanCode}:`, err);
+  });
+
+  return unsub;
+}
+
 export async function leaveCallRoom(roomCode: string, myPeerId: string, isHost: boolean) {
   if (!firestoreDb) return;
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -386,13 +466,17 @@ export async function leaveCallRoom(roomCode: string, myPeerId: string, isHost: 
 if (typeof window !== 'undefined') {
   (window as any).lhSignaling = {
     initCallRoom,
+    updateCallRoom,
     getCallRoom,
     listenCallRoom,
     registerParticipant,
+    updateParticipantState,
     removeParticipant,
     listenParticipants,
     sendCallSignal,
     listenCallSignals,
+    sendCallMessage,
+    listenCallMessages,
     leaveCallRoom
   };
 }

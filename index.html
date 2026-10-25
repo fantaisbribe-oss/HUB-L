@@ -2328,7 +2328,7 @@ function closeModal() {
 
 
 /* =========================================================================
-   PART 1 — CROSS-DEVICE WEBRTC VIDEO CLASSROOM (Firestore Realtime Signaling)
+   PART 1 — FULLY SYNCHRONIZED ZOOM-STYLE CLASSROOM (WebRTC Perfect Negotiation & Firestore)
    ========================================================================= */
 
 const RTC_CONFIG = {
@@ -2342,7 +2342,7 @@ const RTC_CONFIG = {
       { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
     ])
   ],
-  iceCandidatePoolSize: 0 // Do not pre-pool on mobile WebKit/Blink to prevent connection freeze
+  iceCandidatePoolSize: 0
 };
 
 const CALL = {
@@ -2351,7 +2351,7 @@ const CALL = {
   courseCode: '',
   me: '',
   isHost: false,
-  status: 'idle', // 'idle' | 'validating' | 'requesting_media' | 'waiting_for_host' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'ended'
+  status: 'idle', // 'idle' | 'requesting_media' | 'waiting_for_host' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'ended'
   statusDetail: '',
   stream: null,
   screen: null,
@@ -2360,16 +2360,25 @@ const CALL = {
   cam: true,
   mic: true,
   hand: false,
-  peers: {}, // { [peerId]: { pc, name, role, stream, mic, cam, hand, dc, connectionState, iceQueue: [] } }
-  pendingCandidates: {}, // { [peerId]: RTCIceCandidate[] } buffered before peer connection instantiated
-  pendingSignals: [], // buffered before media permissions resolve
+  handRaisedAt: null,
+  isSpeaking: false,
+  chatEnabled: true,
+  chatOpen: false,
+  participantsOpen: false,
+  unreadChatCount: 0,
+  peers: {}, // { [peerId]: { pc, id, name, role, stream, mic, cam, hand, handRaisedAt, speaking, isPolite, makingOffer, ignoreOffer, isSettingRemoteAnswerPending, iceQueue: [], analyserCleanup } }
+  participants: [], // room participant list from Firestore
+  pendingCandidates: {},
+  pendingSignals: [],
   mediaReady: false,
-  chat: [],
+  chat: [], // real-time classroom messages
   t0: 0,
   timer: null,
   unsubSignals: null,
   unsubRoom: null,
-  unsubParts: null
+  unsubParts: null,
+  unsubChat: null,
+  localAudioAnalyserCleanup: null
 };
 
 const normCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -2385,7 +2394,7 @@ function genCode() {
   return c;
 }
 
-// Play remote audio safely handling mobile autoplay policies
+// Safely play remote audio tracks handling iOS/Android autoplay restrictions
 function playRemoteAudio() {
   setTimeout(() => {
     document.querySelectorAll('#callGrid video').forEach(v => {
@@ -2412,7 +2421,100 @@ function unlockAudioManually() {
   });
   const prompt = document.getElementById('audioUnlockPrompt');
   if (prompt) prompt.style.display = 'none';
-  toast('Audio enabled');
+  toast('Audio playback enabled');
+}
+
+// Real-time Active Speaker Audio Analysers using Web Audio API
+function attachLocalAudioAnalyser(stream) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    const audioCtx = new AudioContextClass();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.4;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    const interval = setInterval(() => {
+      if (!CALL.room || !stream.active) {
+        clearInterval(interval);
+        try { audioCtx.close(); } catch (e) {}
+        return;
+      }
+      analyser.getByteFrequencyData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const avg = sum / data.length;
+      const speaking = CALL.mic && avg > 16;
+      if (speaking !== CALL.isSpeaking) {
+        CALL.isSpeaking = speaking;
+        highlightTileSpeaking('me', speaking);
+        if (window.lhSignaling && CALL.room) {
+          window.lhSignaling.updateParticipantState(CALL.room, CALL.me, { speaking });
+        }
+      }
+    }, 180);
+
+    return () => {
+      clearInterval(interval);
+      try { audioCtx.close(); } catch (e) {}
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function attachRemoteAudioAnalyser(peerId, stream) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    const audioCtx = new AudioContextClass();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.4;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    const interval = setInterval(() => {
+      const peer = CALL.peers[peerId];
+      if (!peer || !CALL.room || !stream.active) {
+        clearInterval(interval);
+        try { audioCtx.close(); } catch (e) {}
+        return;
+      }
+      analyser.getByteFrequencyData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const avg = sum / data.length;
+      const speaking = peer.mic && avg > 16;
+      if (speaking !== peer.speaking) {
+        peer.speaking = speaking;
+        highlightTileSpeaking(peerId, speaking);
+      }
+    }, 180);
+
+    return () => {
+      clearInterval(interval);
+      try { audioCtx.close(); } catch (e) {}
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function highlightTileSpeaking(targetId, isSpeaking) {
+  const tile = document.getElementById(targetId === 'me' ? 'tile_me' : `tile_${targetId}`);
+  if (!tile) return;
+  if (isSpeaking) {
+    tile.style.boxShadow = '0 0 0 3px #10b981, 0 10px 25px -5px rgba(16,185,129,0.3)';
+    tile.style.borderColor = '#10b981';
+  } else {
+    tile.style.boxShadow = 'none';
+    tile.style.borderColor = '#1f2937';
+  }
 }
 
 function evaluateGlobalCallStatus() {
@@ -2428,40 +2530,22 @@ function evaluateGlobalCallStatus() {
 
   if (connectedCount > 0) {
     CALL.status = 'connected';
-    CALL.statusDetail = `${connectedCount} participant${connectedCount > 1 ? 's' : ''} connected`;
+    CALL.statusDetail = `${connectedCount} peer${connectedCount > 1 ? 's' : ''} live`;
   } else if (connectingCount > 0) {
     CALL.status = 'connecting';
-    CALL.statusDetail = 'Establishing secure WebRTC peer connection…';
+    CALL.statusDetail = 'Connecting…';
   } else if (failedCount > 0 && peers.length > 0) {
     CALL.status = 'failed';
-    CALL.statusDetail = 'WebRTC connection failed. Tap Retry below.';
+    CALL.statusDetail = 'Connection failed';
   } else if (CALL.isHost) {
     CALL.status = 'waiting';
-    CALL.statusDetail = 'Waiting for students to enter room code';
+    CALL.statusDetail = 'Waiting for students…';
   } else {
     CALL.status = 'connecting';
-    CALL.statusDetail = 'Connecting to lecturer stream…';
+    CALL.statusDetail = 'Connecting to class…';
   }
 
   drawStatusBadge();
-}
-
-function updatePeerStatusUI(peerId, state) {
-  const badge = document.querySelector(`#tile_${CSS.escape(peerId)} .peer-state-badge`);
-  if (!badge) return;
-  if (state === 'connected') {
-    badge.textContent = '● Live';
-    badge.style.background = '#059669';
-  } else if (state === 'connecting') {
-    badge.textContent = 'Connecting…';
-    badge.style.background = '#d97706';
-  } else if (state === 'disconnected') {
-    badge.textContent = 'Reconnecting…';
-    badge.style.background = '#d97706';
-  } else if (state === 'failed') {
-    badge.textContent = 'Connection Failed';
-    badge.style.background = '#dc2626';
-  }
 }
 
 function drawStatusBadge() {
@@ -2475,12 +2559,7 @@ function drawStatusBadge() {
     statusEl.style.background = '#059669';
     statusEl.style.color = '#fff';
   } else if (s === 'connecting') {
-    statusEl.textContent = 'Connecting Media…';
-    statusEl.className = 'pill';
-    statusEl.style.background = '#d97706';
-    statusEl.style.color = '#fff';
-  } else if (s === 'reconnecting') {
-    statusEl.textContent = 'Reconnecting…';
+    statusEl.textContent = 'Connecting…';
     statusEl.className = 'pill';
     statusEl.style.background = '#d97706';
     statusEl.style.color = '#fff';
@@ -2495,12 +2574,12 @@ function drawStatusBadge() {
     statusEl.style.background = '#6366f1';
     statusEl.style.color = '#fff';
   } else if (s === 'ended') {
-    statusEl.textContent = 'Session Ended';
+    statusEl.textContent = 'Class Ended';
     statusEl.className = 'pill';
     statusEl.style.background = '#64748b';
     statusEl.style.color = '#fff';
   } else if (CALL.isHost) {
-    statusEl.textContent = 'Waiting for Students…';
+    statusEl.textContent = '● Class Ready';
     statusEl.className = 'pill';
     statusEl.style.background = '#2563eb';
     statusEl.style.color = '#fff';
@@ -2512,87 +2591,74 @@ function drawStatusBadge() {
   }
 }
 
-function setupDataChannel(peerId, dc) {
-  const peer = CALL.peers[peerId];
-  if (!peer) return;
-  peer.dc = dc;
-  dc.onopen = () => {
-    try {
-      dc.send(JSON.stringify({ t: 'state', name: db.user.name, mic: CALL.mic, cam: CALL.cam, hand: CALL.hand }));
-    } catch (e) {}
-  };
-  dc.onmessage = e => {
-    try {
-      const m = JSON.parse(e.data);
-      if (m.t === 'state') {
-        Object.assign(peer, { name: m.name || peer.name, mic: m.mic !== false, cam: m.cam !== false, hand: !!m.hand });
-        updatePeerTileUI(peerId);
-      } else if (m.t === 'chat') {
-        CALL.chat.push({ n: peer.name, x: m.x });
-        drawChat();
-      } else if (m.t === 'bye') {
-        dropPeer(peerId);
-      }
-    } catch (err) {}
-  };
-}
-
-function sendAllData(obj) {
-  const msg = JSON.stringify(obj);
-  Object.values(CALL.peers).forEach(p => {
-    if (p.dc && p.dc.readyState === 'open') {
-      try { p.dc.send(msg); } catch (e) {}
-    }
-  });
-}
-
-function dropPeer(peerId) {
-  const p = CALL.peers[peerId];
-  if (p) {
-    try { p.pc.close(); } catch (e) {}
-    delete CALL.peers[peerId];
-  }
-  const el = document.getElementById(`tile_${peerId}`);
-  if (el) el.remove();
-  evaluateGlobalCallStatus();
-  updateCallParticipantCount();
-}
-
 function updateCallParticipantCount() {
   const countEl = document.getElementById('callCount');
   if (countEl) {
-    countEl.textContent = Object.keys(CALL.peers).length + 1;
+    const total = Math.max(1, (CALL.participants && CALL.participants.length) || (Object.keys(CALL.peers).length + 1));
+    countEl.textContent = total;
+  }
+  const btnCount = document.getElementById('participantBtnCount');
+  if (btnCount) {
+    const total = Math.max(1, (CALL.participants && CALL.participants.length) || (Object.keys(CALL.peers).length + 1));
+    btnCount.textContent = total;
   }
 }
 
-function createPeerConnection(peerId, peerName, isInitiator) {
+function updateHandQueueBadge() {
+  const raisedCount = (CALL.participants || []).filter(p => p.hand).length;
+  const badge = document.getElementById('handQueueBadge');
+  if (badge) {
+    if (raisedCount > 0) {
+      badge.textContent = `✋ ${raisedCount} raised`;
+      badge.style.display = 'inline-flex';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+}
+
+// WebRTC Perfect Negotiation Peer Connection Factory
+function getOrCreatePeerConnection(peerId, peerName, peerRole) {
   if (CALL.peers[peerId]) {
-    try { CALL.peers[peerId].pc.close(); } catch (e) {}
-    delete CALL.peers[peerId];
+    if (peerName && CALL.peers[peerId].name !== peerName) {
+      CALL.peers[peerId].name = peerName;
+      updatePeerTileUI(peerId);
+    }
+    return CALL.peers[peerId];
   }
 
+  // Deterministic Perfect Negotiation: Polite peer is determined by comparing IDs
+  const isPolite = CALL.me > peerId;
   const pc = new RTCPeerConnection(RTC_CONFIG);
+
   const peer = {
     pc,
     id: peerId,
     name: peerName || 'Participant',
+    role: peerRole || 'student',
     stream: new MediaStream(),
     mic: true,
     cam: true,
     hand: false,
-    dc: null,
+    handRaisedAt: null,
+    speaking: false,
+    isPolite,
+    makingOffer: false,
+    ignoreOffer: false,
+    isSettingRemoteAnswerPending: false,
     connectionState: 'connecting',
-    iceQueue: []
+    iceQueue: [],
+    analyserCleanup: null
   };
   CALL.peers[peerId] = peer;
 
-  // Transfer any pending candidates buffered before peer was instantiated
+  // Transfer any pending candidates buffered before peer connection instantiated
   if (CALL.pendingCandidates[peerId] && CALL.pendingCandidates[peerId].length) {
     peer.iceQueue.push(...CALL.pendingCandidates[peerId]);
     delete CALL.pendingCandidates[peerId];
   }
 
-  // Add all local audio & video tracks to the peer connection
+  // Add all local tracks
   if (CALL.stream) {
     CALL.stream.getTracks().forEach(track => {
       try {
@@ -2603,7 +2669,29 @@ function createPeerConnection(peerId, peerName, isInitiator) {
     });
   }
 
-  // Handle incoming remote media tracks safely (Unified-Plan & mobile stream bundling)
+  // Perfect Negotiation onnegotiationneeded handler
+  pc.onnegotiationneeded = async () => {
+    try {
+      peer.makingOffer = true;
+      await pc.setLocalDescription();
+      if (window.lhSignaling && CALL.room) {
+        window.lhSignaling.sendCallSignal(CALL.room, {
+          from: CALL.me,
+          fromName: db.user.name,
+          to: peerId,
+          type: 'description',
+          payload: { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
+          timestamp: Date.now()
+        });
+      }
+    } catch (err) {
+      console.warn(`[WebRTC] Perfect negotiation error with ${peerId}:`, err);
+    } finally {
+      peer.makingOffer = false;
+    }
+  };
+
+  // Remote tracks handler: Unified-Plan & mobile stream bundling
   pc.ontrack = event => {
     if (event.streams && event.streams[0]) {
       peer.stream = event.streams[0];
@@ -2611,12 +2699,18 @@ function createPeerConnection(peerId, peerName, isInitiator) {
       const existing = peer.stream.getTracks().find(t => t.id === event.track.id);
       if (!existing) peer.stream.addTrack(event.track);
     }
+
     syncPeerVideoElement(peerId, peer.stream);
     playRemoteAudio();
     updatePeerTileUI(peerId);
+
+    // Attach remote audio analyser for active speaker detection
+    if (!peer.analyserCleanup) {
+      peer.analyserCleanup = attachRemoteAudioAnalyser(peerId, peer.stream);
+    }
   };
 
-  // Trickle ICE candidates back to the specific remote peer via Firestore
+  // ICE candidates trickling
   pc.onicecandidate = event => {
     if (event.candidate && window.lhSignaling && CALL.room) {
       window.lhSignaling.sendCallSignal(CALL.room, {
@@ -2630,17 +2724,16 @@ function createPeerConnection(peerId, peerName, isInitiator) {
     }
   };
 
-  // Track state transitions accurately
+  // Connection state management
   pc.onconnectionstatechange = () => {
     peer.connectionState = pc.connectionState;
     updatePeerTileUI(peerId);
     evaluateGlobalCallStatus();
 
     if (pc.connectionState === 'connected') {
-      toast(`Connected with ${peer.name}`);
       playRemoteAudio();
     } else if (pc.connectionState === 'failed') {
-      console.warn(`[WebRTC] Connection failed with ${peerId}, initiating ICE restart`);
+      console.warn(`[WebRTC] Connection failed with ${peerId}, attempting ICE restart`);
       tryIceRestart(peerId);
     } else if (pc.connectionState === 'closed') {
       dropPeer(peerId);
@@ -2657,20 +2750,6 @@ function createPeerConnection(peerId, peerName, isInitiator) {
     updatePeerTileUI(peerId);
   };
 
-  // Setup WebRTC DataChannel for low-latency chat & state sync
-  if (isInitiator) {
-    try {
-      const dc = pc.createDataChannel('lh_data', { ordered: true });
-      setupDataChannel(peerId, dc);
-    } catch (e) {
-      console.warn('createDataChannel error:', e);
-    }
-  } else {
-    pc.ondatachannel = event => {
-      setupDataChannel(peerId, event.channel);
-    };
-  }
-
   syncPeerVideoElement(peerId, peer.stream);
   updatePeerTileUI(peerId);
   evaluateGlobalCallStatus();
@@ -2678,9 +2757,24 @@ function createPeerConnection(peerId, peerName, isInitiator) {
   return peer;
 }
 
+function dropPeer(peerId) {
+  const p = CALL.peers[peerId];
+  if (p) {
+    if (p.analyserCleanup) {
+      try { p.analyserCleanup(); } catch (e) {}
+    }
+    try { p.pc.close(); } catch (e) {}
+    delete CALL.peers[peerId];
+  }
+  const el = document.getElementById(`tile_${peerId}`);
+  if (el) el.remove();
+  evaluateGlobalCallStatus();
+  updateCallParticipantCount();
+}
+
 async function tryIceRestart(peerId) {
   const peer = CALL.peers[peerId];
-  if (!peer || !peer.pc || !CALL.isHost) return;
+  if (!peer || !peer.pc) return;
   try {
     const offer = await peer.pc.createOffer({ iceRestart: true });
     await peer.pc.setLocalDescription(offer);
@@ -2689,7 +2783,7 @@ async function tryIceRestart(peerId) {
         from: CALL.me,
         fromName: db.user.name,
         to: peerId,
-        type: 'offer',
+        type: 'description',
         payload: { sdp: offer.sdp, type: offer.type },
         timestamp: Date.now()
       });
@@ -2715,7 +2809,6 @@ async function addOrQueueCandidate(peerId, candidateData) {
       peer.iceQueue.push(candidate);
     }
   } else {
-    // Peer connection not created yet: buffer candidate until offer is handled
     if (!CALL.pendingCandidates[peerId]) {
       CALL.pendingCandidates[peerId] = [];
     }
@@ -2737,11 +2830,48 @@ async function flushIceQueue(peerId) {
   }
 }
 
+// Synchronize peer connections and presence with Firestore room participants
+function syncParticipantsWithPeers(participants) {
+  if (!CALL.room || !participants) return;
+
+  participants.forEach(p => {
+    if (p.id === CALL.me) {
+      // Local participant sync
+      return;
+    }
+    if (p.status !== 'left') {
+      const peer = getOrCreatePeerConnection(p.id, p.name, p.role);
+      peer.mic = p.mic !== false;
+      peer.cam = p.cam !== false;
+      const wasHandRaised = peer.hand;
+      peer.hand = !!p.hand;
+      peer.handRaisedAt = p.handRaisedAt || null;
+      peer.speaking = !!p.speaking;
+
+      if (!wasHandRaised && peer.hand) {
+        toast(`✋ ${p.name} raised hand`);
+      }
+
+      updatePeerTileUI(p.id);
+    }
+  });
+
+  // Remove stale peers who left
+  Object.keys(CALL.peers).forEach(peerId => {
+    const stillPresent = participants.some(p => p.id === peerId && p.status !== 'left');
+    if (!stillPresent) {
+      dropPeer(peerId);
+    }
+  });
+
+  drawTiles();
+}
+
+// Real-Time Incoming WebRTC and Classroom Interaction Signals
 async function onIncomingSignal(sig, sigId) {
   if (!CALL.room || !sig) return;
   if (sig.from === CALL.me) return;
 
-  // If local media is still initializing, buffer incoming signal to prevent dropping
   if (!CALL.mediaReady) {
     CALL.pendingSignals.push(sig);
     return;
@@ -2750,95 +2880,103 @@ async function onIncomingSignal(sig, sigId) {
   const senderId = sig.from;
   const senderName = sig.fromName || 'Participant';
 
-  if (sig.type === 'join') {
-    // When student joins, Host creates peer connection and sends WebRTC offer
-    if (CALL.isHost) {
-      const peer = createPeerConnection(senderId, senderName, true);
-      try {
-        const offer = await peer.pc.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: true
-        });
-        await peer.pc.setLocalDescription(offer);
+  if (sig.type === 'description' || sig.type === 'offer' || sig.type === 'answer') {
+    const desc = new RTCSessionDescription(sig.payload);
+    const peer = getOrCreatePeerConnection(senderId, senderName);
 
+    const readyForOffer = !peer.makingOffer && (peer.pc.signalingState === "stable" || peer.isSettingRemoteAnswerPending);
+    const offerCollision = desc.type === "offer" && !readyForOffer;
+
+    peer.ignoreOffer = !peer.isPolite && offerCollision;
+    if (peer.ignoreOffer) {
+      console.log(`[WebRTC] Impolite peer ignoring colliding offer from ${senderId}`);
+      return;
+    }
+
+    peer.isSettingRemoteAnswerPending = desc.type === "answer";
+    try {
+      await peer.pc.setRemoteDescription(desc);
+    } catch (err) {
+      console.warn(`[WebRTC] setRemoteDescription error with ${senderId}:`, err);
+    }
+    peer.isSettingRemoteAnswerPending = false;
+    await flushIceQueue(senderId);
+
+    if (desc.type === "offer") {
+      try {
+        await peer.pc.setLocalDescription();
         if (window.lhSignaling && CALL.room) {
           window.lhSignaling.sendCallSignal(CALL.room, {
             from: CALL.me,
             fromName: db.user.name,
             to: senderId,
-            type: 'offer',
-            payload: { sdp: offer.sdp, type: offer.type },
+            type: 'description',
+            payload: { sdp: peer.pc.localDescription.sdp, type: peer.pc.localDescription.type },
             timestamp: Date.now()
           });
         }
       } catch (err) {
-        console.error('Error creating offer for joiner:', err);
-      }
-    }
-  } else if (sig.type === 'host_ready') {
-    // If student was waiting for host, re-announce join now that host is ready
-    if (!CALL.isHost) {
-      window.lhSignaling.sendCallSignal(CALL.room, {
-        from: CALL.me,
-        fromName: db.user.name,
-        to: 'host',
-        type: 'join',
-        payload: {},
-        timestamp: Date.now()
-      });
-    }
-  } else if (sig.type === 'offer') {
-    // Student receives offer from host
-    const peer = createPeerConnection(senderId, senderName, false);
-    try {
-      await peer.pc.setRemoteDescription(new RTCSessionDescription(sig.payload));
-      await flushIceQueue(senderId);
-
-      const answer = await peer.pc.createAnswer();
-      await peer.pc.setLocalDescription(answer);
-
-      if (window.lhSignaling && CALL.room) {
-        window.lhSignaling.sendCallSignal(CALL.room, {
-          from: CALL.me,
-          fromName: db.user.name,
-          to: senderId,
-          type: 'answer',
-          payload: { sdp: answer.sdp, type: answer.type },
-          timestamp: Date.now()
-        });
-      }
-    } catch (err) {
-      console.error('Error handling offer from host:', err);
-    }
-  } else if (sig.type === 'answer') {
-    // Host receives answer from student
-    const peer = CALL.peers[senderId];
-    if (peer && peer.pc.signalingState === 'have-local-offer') {
-      try {
-        await peer.pc.setRemoteDescription(new RTCSessionDescription(sig.payload));
-        await flushIceQueue(senderId);
-      } catch (err) {
-        console.error('Error handling answer:', err);
+        console.warn(`[WebRTC] Error creating answer for ${senderId}:`, err);
       }
     }
   } else if (sig.type === 'candidate') {
-    await addOrQueueCandidate(senderId, sig.payload);
+    const peer = CALL.peers[senderId];
+    try {
+      await addOrQueueCandidate(senderId, sig.payload);
+    } catch (err) {
+      if (peer && !peer.ignoreOffer) {
+        console.warn(`[WebRTC] Candidate error from ${senderId}:`, err);
+      }
+    }
   } else if (sig.type === 'state') {
     const peer = CALL.peers[senderId];
     if (peer) {
       Object.assign(peer, {
         mic: sig.payload.mic !== false,
         cam: sig.payload.cam !== false,
-        hand: !!sig.payload.hand
+        hand: !!sig.payload.hand,
+        handRaisedAt: sig.payload.handRaisedAt || null
       });
       updatePeerTileUI(senderId);
+      updateParticipantsDrawer();
+      updateHandQueueBadge();
     }
-  } else if (sig.type === 'chat') {
-    CALL.chat.push({ n: senderName, x: sig.payload.x });
-    drawChat();
+  } else if (sig.type === 'mute_request') {
+    // Lecturer requested this client to mute
+    if (CALL.stream) {
+      CALL.stream.getAudioTracks().forEach(t => t.enabled = false);
+    }
+    CALL.mic = false;
+    if (window.lhSignaling && CALL.room) {
+      window.lhSignaling.updateParticipantState(CALL.room, CALL.me, { mic: false });
+    }
+    toast('You were muted by the lecturer.');
+    syncLocalVideoElement();
+    drawControls();
+    updateParticipantsDrawer();
+  } else if (sig.type === 'lower_hand') {
+    // Lecturer lowered student's hand
+    CALL.hand = false;
+    CALL.handRaisedAt = null;
+    if (window.lhSignaling && CALL.room) {
+      window.lhSignaling.updateParticipantState(CALL.room, CALL.me, { hand: false, handRaisedAt: null });
+    }
+    toast('Your raised hand was acknowledged and lowered by the lecturer.');
+    syncLocalVideoElement();
+    drawControls();
+    updateParticipantsDrawer();
+    updateHandQueueBadge();
+  } else if (sig.type === 'reaction') {
+    triggerReactionAnimation(sig.payload?.emoji || '👏', senderId, senderName);
+  } else if (sig.type === 'announcement') {
+    showCallAnnouncementBanner(sig.payload?.text || '');
   } else if (sig.type === 'bye') {
     dropPeer(senderId);
     toast(`${senderName} left the session`);
+    if (sig.payload && sig.payload.endAll) {
+      toast('The lecturer has ended this live session.');
+      setTimeout(() => leaveVideoCall(), 2000);
+    }
   }
 }
 
@@ -2866,7 +3004,7 @@ function showMediaPermissionError(err) {
       <h2 style="font-size:20px;margin-bottom:8px;">Camera & Microphone Access Required</h2>
       <p style="color:var(--muted);font-size:14px;line-height:1.55;margin-bottom:20px;">
         ${isDenied 
-          ? 'Your browser blocked camera and microphone access. To join live video classes, tap the <b>lock or site settings icon</b> in your browser address bar and change Camera & Microphone to <b>Allow</b>.' 
+          ? 'Your browser blocked camera and microphone access. Tap the <b>lock or site settings icon</b> in your browser address bar and set Camera & Microphone to <b>Allow</b>.' 
           : 'Could not connect to camera or microphone. Check that no other application is using your camera.'}
       </p>
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
@@ -2892,11 +3030,11 @@ function showWaitingForLecturerView(code, meetingRecord) {
       <h2 style="font-size:20px;margin-bottom:6px;">Class Has Not Started Yet</h2>
       <p style="color:var(--muted);font-size:14px;line-height:1.55;margin-bottom:18px;">
         You entered access code <b style="color:var(--ink);">${showCode(code)}</b> for <b>${esc(title)}</b>.<br>
-        Your lecturer has not opened this live video session yet.
+        Your lecturer has not opened this live session yet.
       </p>
       
       <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:14px;margin-bottom:24px;font-size:13px;color:#1d4ed8;line-height:1.5;text-align:left;">
-        <b>Automatic Admission Active:</b> Please keep this screen open. As soon as your lecturer taps "Start Live Session", you will be admitted automatically.
+        <b>Automatic Admission Active:</b> Please keep this screen open. As soon as your lecturer starts the session, you will be admitted automatically.
       </div>
 
       <div style="display:flex;gap:10px;justify-content:center;">
@@ -2910,7 +3048,6 @@ function showWaitingForLecturerView(code, meetingRecord) {
     </div>
   `;
 
-  // Real-time listener: Auto-admit student when lecturer starts the session!
   if (window.lhSignaling) {
     if (CALL.unsubRoom) {
       try { CALL.unsubRoom(); } catch (e) {}
@@ -2933,11 +3070,11 @@ async function startCall(codeIn, asHost) {
   if (CALL.room) return;
 
   if (!navigator.mediaDevices || !window.RTCPeerConnection) {
-    toast('This browser does not support WebRTC video calls. Please use HTTPS on mobile Chrome or Safari.');
+    toast('WebRTC is required. Please access LectureHub via HTTPS.');
     return;
   }
 
-  // 1. Session Validation & Course Authorization
+  // 1. Session Validation & Authorization
   const meetingRecord = (db.meetings || []).find(m => normCode(m.accessCode) === code);
   let cloudRoom = null;
   if (window.lhSignaling) {
@@ -2951,14 +3088,12 @@ async function startCall(codeIn, asHost) {
   const targetCourseCode = (meetingRecord && meetingRecord.courseCode) || (cloudRoom && cloudRoom.courseCode) || '';
   const roomTitle = (meetingRecord && meetingRecord.title) || (cloudRoom && cloudRoom.title) || 'Live Classroom';
 
-  // If student: verify meeting existence and authorization
   if (!asHost) {
     if (!meetingRecord && !cloudRoom) {
       toast('Session code not found. Please verify the code with your lecturer.');
       return;
     }
 
-    // Verify course enrollment
     if (targetCourseCode) {
       const course = courseByCode(targetCourseCode);
       if (course && typeof studentEnrollments === 'function') {
@@ -2970,7 +3105,6 @@ async function startCall(codeIn, asHost) {
       }
     }
 
-    // Check if lecturer has started the session
     if (!cloudRoom || !cloudRoom.active) {
       showWaitingForLecturerView(code, meetingRecord);
       return;
@@ -2985,6 +3119,7 @@ async function startCall(codeIn, asHost) {
   CALL.isHost = !!asHost;
   CALL.status = 'requesting_media';
   CALL.peers = {};
+  CALL.participants = [];
   CALL.pendingCandidates = {};
   CALL.pendingSignals = [];
   CALL.mediaReady = false;
@@ -2992,6 +3127,12 @@ async function startCall(codeIn, asHost) {
   CALL.mic = true;
   CALL.cam = true;
   CALL.hand = false;
+  CALL.handRaisedAt = null;
+  CALL.isSpeaking = false;
+  CALL.chatEnabled = cloudRoom ? cloudRoom.chatEnabled !== false : true;
+  CALL.chatOpen = false;
+  CALL.participantsOpen = false;
+  CALL.unreadChatCount = 0;
   CALL.sharing = false;
   CALL.facingMode = 'user';
   CALL.t0 = Date.now();
@@ -2999,7 +3140,7 @@ async function startCall(codeIn, asHost) {
   renderMeetingTab(document.getElementById('appContent'));
   toast(asHost ? 'Starting session & opening cloud room…' : 'Connecting to live class…');
 
-  // 3. Request Mobile-Optimized Camera & Microphone
+  // 3. Acquire Mobile-Optimized Camera & Microphone
   try {
     CALL.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: CALL.facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -3027,7 +3168,10 @@ async function startCall(codeIn, asHost) {
   localStream = CALL.stream;
   CALL.mediaReady = true;
 
-  // 4. Start Call Timer
+  // Attach local audio analyser for real-time active speaker outline
+  CALL.localAudioAnalyserCleanup = attachLocalAudioAnalyser(CALL.stream);
+
+  // 4. Timer
   CALL.timer = setInterval(() => {
     const el = document.getElementById('callTimer');
     if (el) {
@@ -3036,7 +3180,7 @@ async function startCall(codeIn, asHost) {
     }
   }, 1000);
 
-  // 5. Connect to Firestore Signaling & Presence
+  // 5. Connect to Firestore Signaling, Presence, and Messages
   if (window.lhSignaling) {
     if (asHost) {
       await window.lhSignaling.initCallRoom(code, {
@@ -3045,11 +3189,12 @@ async function startCall(codeIn, asHost) {
         title: CALL.roomTitle,
         courseCode: CALL.courseCode,
         active: true,
+        chatEnabled: true,
         startedAt: Date.now()
       });
     }
 
-    // Register participant in room
+    // Register participant presence
     await window.lhSignaling.registerParticipant(code, {
       id: CALL.me,
       name: db.user.name,
@@ -3057,45 +3202,54 @@ async function startCall(codeIn, asHost) {
       joinedAt: Date.now(),
       status: 'active',
       cam: CALL.cam,
-      mic: CALL.mic
+      mic: CALL.mic,
+      hand: false,
+      speaking: false
     });
 
-    // Listen for room session changes (e.g. Host ending call)
+    // Listen for room changes (e.g. Host ending call or updating chat policy)
     CALL.unsubRoom = window.lhSignaling.listenCallRoom(code, (roomData) => {
-      if (!asHost && roomData && roomData.active === false) {
+      if (!roomData) return;
+      if (!asHost && roomData.active === false) {
         CALL.status = 'ended';
         drawStatusBadge();
         toast('The lecturer has ended this live session.');
         setTimeout(() => leaveVideoCall(), 2500);
       }
+      if (roomData.chatEnabled !== undefined) {
+        CALL.chatEnabled = roomData.chatEnabled;
+        updateChatPolicyUI();
+      }
+      if (roomData.announcement) {
+        showCallAnnouncementBanner(roomData.announcement);
+      }
     });
 
-    // Subscribe to fresh incoming WebRTC signals
+    // Synchronize participants list in real time
+    CALL.unsubParts = window.lhSignaling.listenParticipants(code, (participants) => {
+      CALL.participants = participants;
+      syncParticipantsWithPeers(participants);
+      updateParticipantsDrawer();
+      updateHandQueueBadge();
+      updateCallParticipantCount();
+    });
+
+    // Subscribe to WebRTC signals
     CALL.unsubSignals = window.lhSignaling.listenCallSignals(code, CALL.me, asHost, CALL.t0, onIncomingSignal);
 
-    // Announce presence
-    if (!asHost) {
-      window.lhSignaling.sendCallSignal(code, {
-        from: CALL.me,
-        fromName: db.user.name,
-        to: 'host',
-        type: 'join',
-        payload: {},
-        timestamp: Date.now()
-      });
-    } else {
-      window.lhSignaling.sendCallSignal(code, {
-        from: CALL.me,
-        fromName: db.user.name,
-        to: 'all',
-        type: 'host_ready',
-        payload: {},
-        timestamp: Date.now()
-      });
-    }
+    // Subscribe to persistent classroom chat messages
+    CALL.unsubChat = window.lhSignaling.listenCallMessages(code, (msg, msgId) => {
+      if (CALL.chat.some(m => m.id === msgId)) return;
+      CALL.chat.push({ ...msg, id: msgId });
+      drawChat();
+      if (!CALL.chatOpen && msg.senderId !== CALL.me) {
+        CALL.unreadChatCount = (CALL.unreadChatCount || 0) + 1;
+        updateChatBadge();
+      }
+    });
   }
 
-  // 6. Flush any signals that arrived during permission prompt
+  // 6. Flush buffered signals
   await flushPendingSignals();
 
   drawTiles();
@@ -3113,23 +3267,25 @@ function syncLocalVideoElement() {
     localTile = document.createElement('div');
     localTile.id = 'tile_me';
     localTile.className = 'video-box';
-    localTile.style.cssText = 'position:relative;background:#111827;border-radius:14px;border:1px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;';
+    localTile.style.cssText = 'position:relative;background:#111827;border-radius:16px;border:2px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;transition:all .2s ease;';
     localTile.innerHTML = `
       <video id="video_me" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;${!CALL.sharing ? 'transform:scaleX(-1);' : ''}"></video>
-      <div id="cam_off_me" class="cam-off" style="position:absolute;inset:0;background:#111827;display:${CALL.cam ? 'none' : 'grid'};place-items:center;">
+      <div id="cam_off_me" class="cam-off" style="position:absolute;inset:0;background:#0f172a;display:${CALL.cam ? 'none' : 'grid'};place-items:center;">
         <div style="text-align:center;">
-          <div style="width:64px;height:64px;border-radius:50%;background:#1e3a8a;color:#93c5fd;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 8px;">
+          <div style="width:68px;height:68px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#38bdf8);color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 10px;box-shadow:0 8px 20px rgba(37,99,235,0.3);">
             ${esc(String(db.user.name || '?').slice(0, 2).toUpperCase())}
           </div>
-          <span style="font-size:12px;color:#94a3b8;">Camera turned off</span>
+          <span style="font-size:12px;color:#94a3b8;font-weight:600;">Camera Off</span>
         </div>
       </div>
-      <span class="peer-state-badge" style="position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;background:#059669;color:#fff;">
-        Local (You)
+      <span class="peer-state-badge" style="position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:3px 10px;border-radius:99px;background:#059669;color:#fff;">
+        You (${CALL.isHost ? 'Host' : 'Student'})
       </span>
-      <span id="label_me" style="position:absolute;bottom:10px;left:10px;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);padding:4px 10px;border-radius:8px;font-size:11.5px;color:#fff;display:flex;align-items:center;gap:6px;">
-        ${CALL.hand ? '✋ ' : ''}${esc(db.user.name)} (You)
-        ${CALL.mic ? '' : '<span style="color:#ef4444;">🔇</span>'}
+      <span id="hand_me" style="position:absolute;top:10px;left:10px;font-size:11px;font-weight:800;padding:3px 10px;border-radius:99px;background:#f59e0b;color:#fff;display:${CALL.hand ? 'inline-flex' : 'none'};align-items:center;gap:4px;">
+        ✋ Hand Raised
+      </span>
+      <span id="label_me" style="position:absolute;bottom:10px;left:10px;background:rgba(15,23,42,0.85);backdrop-filter:blur(6px);padding:5px 12px;border-radius:10px;font-size:12px;color:#fff;display:flex;align-items:center;gap:8px;font-weight:600;">
+        ${esc(db.user.name)} ${CALL.mic ? '<span style="color:#10b981;">🎤</span>' : '<span style="color:#ef4444;">🔇</span>'}
       </span>
     `;
     grid.prepend(localTile);
@@ -3146,9 +3302,12 @@ function syncLocalVideoElement() {
   const camOff = document.getElementById('cam_off_me');
   if (camOff) camOff.style.display = (CALL.cam || CALL.sharing) ? 'none' : 'grid';
 
+  const handBadge = document.getElementById('hand_me');
+  if (handBadge) handBadge.style.display = CALL.hand ? 'inline-flex' : 'none';
+
   const lbl = document.getElementById('label_me');
   if (lbl) {
-    lbl.innerHTML = `${CALL.hand ? '✋ ' : ''}${esc(db.user.name)} (You) ${CALL.mic ? '' : '<span style="color:#ef4444;">🔇</span>'}`;
+    lbl.innerHTML = `${esc(db.user.name)} ${CALL.mic ? '<span style="color:#10b981;">🎤</span>' : '<span style="color:#ef4444;">🔇</span>'}`;
   }
 }
 
@@ -3164,22 +3323,31 @@ function syncPeerVideoElement(peerId, stream) {
     peerTile = document.createElement('div');
     peerTile.id = `tile_${peerId}`;
     peerTile.className = 'video-box';
-    peerTile.style.cssText = 'position:relative;background:#111827;border-radius:14px;border:1px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;';
+    peerTile.style.cssText = 'position:relative;background:#111827;border-radius:16px;border:2px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;transition:all .2s ease;';
     const ini = String(peer.name || '?').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
 
     peerTile.innerHTML = `
       <video id="video_${peerId}" autoplay playsinline style="width:100%;height:100%;object-fit:cover;"></video>
-      <div id="cam_off_${peerId}" class="cam-off" style="position:absolute;inset:0;background:#111827;display:${peer.connectionState === 'connected' && peer.cam ? 'none' : 'grid'};place-items:center;">
+      <div id="cam_off_${peerId}" class="cam-off" style="position:absolute;inset:0;background:#0f172a;display:${peer.connectionState === 'connected' && peer.cam ? 'none' : 'grid'};place-items:center;">
         <div style="text-align:center;">
-          <div style="width:64px;height:64px;border-radius:50%;background:#1e3a8a;color:#93c5fd;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 8px;">${esc(ini)}</div>
-          <span id="cam_status_${peerId}" style="font-size:12px;color:#94a3b8;">${peer.connectionState === 'connected' ? 'Camera turned off' : 'Connecting stream…'}</span>
+          <div style="width:68px;height:68px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 10px;box-shadow:0 8px 20px rgba(29,78,216,0.3);">${esc(ini)}</div>
+          <span id="cam_status_${peerId}" style="font-size:12px;color:#94a3b8;font-weight:600;">${peer.connectionState === 'connected' ? 'Camera Off' : 'Connecting stream…'}</span>
         </div>
       </div>
-      <span id="badge_${peerId}" class="peer-state-badge" style="position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;background:#d97706;color:#fff;">
+      <span id="badge_${peerId}" class="peer-state-badge" style="position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:3px 10px;border-radius:99px;background:#d97706;color:#fff;">
         Connecting…
       </span>
-      <span id="label_${peerId}" style="position:absolute;bottom:10px;left:10px;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);padding:4px 10px;border-radius:8px;font-size:11.5px;color:#fff;display:flex;align-items:center;gap:6px;">
-        ${esc(peer.name)}
+      <span id="hand_${peerId}" style="position:absolute;top:10px;left:10px;font-size:11px;font-weight:800;padding:3px 10px;border-radius:99px;background:#f59e0b;color:#fff;display:${peer.hand ? 'inline-flex' : 'none'};align-items:center;gap:4px;">
+        ✋ Hand Raised
+      </span>
+      <!-- Lecturer Quick In-Tile Action Button -->
+      ${CALL.isHost && peer.role !== 'host' ? `
+        <button type="button" onclick="muteStudent('${peerId}')" style="position:absolute;top:10px;right:96px;background:rgba(220,38,38,0.85);border:0;color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:8px;cursor:pointer;" title="Mute participant audio">
+          Mute
+        </button>
+      ` : ''}
+      <span id="label_${peerId}" style="position:absolute;bottom:10px;left:10px;background:rgba(15,23,42,0.85);backdrop-filter:blur(6px);padding:5px 12px;border-radius:10px;font-size:12px;color:#fff;display:flex;align-items:center;gap:8px;font-weight:600;">
+        ${esc(peer.name)} <span class="pill" style="font-size:9.5px;padding:1px 6px;background:${peer.role === 'host' ? '#d97706' : '#2563eb'};color:#fff;">${peer.role === 'host' ? 'Host' : 'Student'}</span>
       </span>
     `;
     grid.appendChild(peerTile);
@@ -3219,14 +3387,23 @@ function updatePeerTileUI(peerId) {
     camOff.style.display = (isLive && peer.cam) ? 'none' : 'grid';
   }
 
+  const handBadge = document.getElementById(`hand_${peerId}`);
+  if (handBadge) {
+    handBadge.style.display = peer.hand ? 'inline-flex' : 'none';
+  }
+
   const camStatus = document.getElementById(`cam_status_${peerId}`);
   if (camStatus) {
-    camStatus.textContent = isLive ? 'Camera turned off' : 'Connecting stream…';
+    camStatus.textContent = isLive ? 'Camera Off' : 'Connecting stream…';
   }
 
   const lbl = document.getElementById(`label_${peerId}`);
   if (lbl) {
-    lbl.innerHTML = `${peer.hand ? '✋ ' : ''}${esc(peer.name)} ${peer.mic ? '' : '<span style="color:#ef4444;">🔇</span>'}`;
+    lbl.innerHTML = `
+      ${esc(peer.name)}
+      <span class="pill" style="font-size:9.5px;padding:1px 6px;background:${peer.role === 'host' ? '#d97706' : '#2563eb'};color:#fff;">${peer.role === 'host' ? 'Host' : 'Student'}</span>
+      ${peer.mic ? '<span style="color:#10b981;">🎤</span>' : '<span style="color:#ef4444;">🔇</span>'}
+    `;
   }
 }
 
@@ -3239,18 +3416,17 @@ function drawTiles() {
     syncPeerVideoElement(id, CALL.peers[id].stream);
   });
 
-  // If host and no students have connected yet, show an inviting waiting banner
   let emptyBanner = document.getElementById('waitingStudentBanner');
   if (CALL.isHost && Object.keys(CALL.peers).length === 0) {
     if (!emptyBanner) {
       emptyBanner = document.createElement('div');
       emptyBanner.id = 'waitingStudentBanner';
-      emptyBanner.style.cssText = 'position:relative;background:#0f172a;border:2px dashed #1e3a8a;border-radius:14px;min-height:220px;height:100%;display:grid;place-items:center;text-align:center;padding:20px;';
+      emptyBanner.style.cssText = 'position:relative;background:#0f172a;border:2px dashed #1e3a8a;border-radius:16px;min-height:220px;height:100%;display:grid;place-items:center;text-align:center;padding:24px;';
       emptyBanner.innerHTML = `
         <div>
-          <div style="width:52px;height:52px;border-radius:14px;background:#1e293b;color:#60a5fa;display:grid;place-items:center;font-size:24px;margin:0 auto 10px;">👥</div>
-          <strong style="color:#fff;font-size:15px;display:block;">Waiting for students to join</strong>
-          <small style="color:#94a3b8;font-size:12px;display:block;margin-top:4px;">Share access code <b>${esc(showCode(CALL.room))}</b> with your class.</small>
+          <div style="width:56px;height:56px;border-radius:16px;background:#1e293b;color:#60a5fa;display:grid;place-items:center;font-size:26px;margin:0 auto 10px;">👥</div>
+          <strong style="color:#fff;font-size:16px;display:block;">Waiting for students to join</strong>
+          <small style="color:#94a3b8;font-size:13px;display:block;margin-top:4px;">Share access code <b style="color:#60a5fa;">${esc(showCode(CALL.room))}</b> with your class.</small>
         </div>
       `;
       grid.appendChild(emptyBanner);
@@ -3260,6 +3436,7 @@ function drawTiles() {
   }
 
   updateCallParticipantCount();
+  updateHandQueueBadge();
 }
 
 function toggleAudio() {
@@ -3267,42 +3444,44 @@ function toggleAudio() {
   if (!t) return;
   t.enabled = !t.enabled;
   CALL.mic = t.enabled;
-  sendAllData({ t: 'state', mic: CALL.mic, cam: CALL.cam, hand: CALL.hand });
   if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.updateParticipantState(CALL.room, CALL.me, { mic: CALL.mic });
     window.lhSignaling.sendCallSignal(CALL.room, {
       from: CALL.me,
       fromName: db.user.name,
       to: 'all',
       type: 'state',
-      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand },
+      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand, handRaisedAt: CALL.handRaisedAt },
       timestamp: Date.now()
     });
   }
   syncLocalVideoElement();
   drawControls();
+  updateParticipantsDrawer();
 }
 
 function toggleVideo() {
   const t = CALL.stream && CALL.stream.getVideoTracks()[0];
   if (!t) {
-    toast('No camera available on this device.');
+    toast('No camera active on this device.');
     return;
   }
   t.enabled = !t.enabled;
   CALL.cam = t.enabled;
-  sendAllData({ t: 'state', mic: CALL.mic, cam: CALL.cam, hand: CALL.hand });
   if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.updateParticipantState(CALL.room, CALL.me, { cam: CALL.cam });
     window.lhSignaling.sendCallSignal(CALL.room, {
       from: CALL.me,
       fromName: db.user.name,
       to: 'all',
       type: 'state',
-      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand },
+      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand, handRaisedAt: CALL.handRaisedAt },
       timestamp: Date.now()
     });
   }
   syncLocalVideoElement();
   drawControls();
+  updateParticipantsDrawer();
 }
 
 async function switchCamera() {
@@ -3321,12 +3500,10 @@ async function switchCamera() {
     });
     const newTrack = newStream.getVideoTracks()[0];
 
-    // Replace track locally
     currentVideo.stop();
     CALL.stream.removeTrack(currentVideo);
     CALL.stream.addTrack(newTrack);
 
-    // Replace track in-flight across all active WebRTC peer connections
     Object.values(CALL.peers).forEach(p => {
       const sender = p.pc.getSenders().find(s => s.track && s.track.kind === 'video');
       if (sender) sender.replaceTrack(newTrack);
@@ -3342,20 +3519,100 @@ async function switchCamera() {
 
 function toggleHand() {
   CALL.hand = !CALL.hand;
-  sendAllData({ t: 'state', mic: CALL.mic, cam: CALL.cam, hand: CALL.hand });
+  CALL.handRaisedAt = CALL.hand ? Date.now() : null;
+
   if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.updateParticipantState(CALL.room, CALL.me, {
+      hand: CALL.hand,
+      handRaisedAt: CALL.handRaisedAt
+    });
     window.lhSignaling.sendCallSignal(CALL.room, {
       from: CALL.me,
       fromName: db.user.name,
       to: 'all',
       type: 'state',
-      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand },
+      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand, handRaisedAt: CALL.handRaisedAt },
       timestamp: Date.now()
     });
   }
   syncLocalVideoElement();
   drawControls();
-  if (CALL.hand) toast('Hand raised ✋');
+  updateParticipantsDrawer();
+  updateHandQueueBadge();
+  toast(CALL.hand ? 'Hand raised ✋ (Your lecturer has been notified)' : 'Hand lowered');
+}
+
+function lowerStudentHand(studentId) {
+  if (!CALL.isHost) return;
+  if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.updateParticipantState(CALL.room, studentId, { hand: false, handRaisedAt: null });
+    window.lhSignaling.sendCallSignal(CALL.room, {
+      from: CALL.me,
+      fromName: db.user.name,
+      to: studentId,
+      type: 'lower_hand',
+      payload: {},
+      timestamp: Date.now()
+    });
+  }
+  const peer = CALL.peers[studentId];
+  if (peer) {
+    peer.hand = false;
+    peer.handRaisedAt = null;
+    updatePeerTileUI(studentId);
+  }
+  toast('Acknowledged and lowered student hand.');
+  updateParticipantsDrawer();
+  updateHandQueueBadge();
+}
+
+function lowerAllHands() {
+  if (!CALL.isHost) return;
+  (CALL.participants || []).forEach(p => {
+    if (p.hand && p.id !== CALL.me) {
+      lowerStudentHand(p.id);
+    }
+  });
+  if (CALL.hand) {
+    toggleHand();
+  }
+  toast('All raised hands lowered.');
+}
+
+function muteStudent(studentId) {
+  if (!CALL.isHost) return;
+  const peer = CALL.peers[studentId];
+  if (peer) {
+    // Immediate local mute
+    const videoEl = document.getElementById(`video_${studentId}`);
+    if (videoEl) videoEl.muted = true;
+    peer.mic = false;
+    updatePeerTileUI(studentId);
+  }
+
+  // Authoritative remote mute signal sent to participant
+  if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.sendCallSignal(CALL.room, {
+      from: CALL.me,
+      fromName: db.user.name,
+      to: studentId,
+      type: 'mute_request',
+      payload: {},
+      timestamp: Date.now()
+    });
+    window.lhSignaling.updateParticipantState(CALL.room, studentId, { mic: false });
+  }
+
+  toast('Muted participant.');
+  updateParticipantsDrawer();
+}
+
+function muteAllStudents() {
+  if (!CALL.isHost) return;
+  Object.keys(CALL.peers).forEach(id => {
+    muteStudent(id);
+  });
+  toast('Muted all students.');
 }
 
 async function toggleShare() {
@@ -3396,36 +3653,322 @@ function stopShare() {
   drawControls();
 }
 
-function sendChat() {
-  const i = document.getElementById('chatIn');
-  if (!i) return;
-  const x = i.value.trim();
-  if (!x) return;
-  CALL.chat.push({ n: 'You', x });
-  sendAllData({ t: 'chat', x });
+// Classroom Emoji Reactions
+function sendReaction(emoji) {
+  triggerReactionAnimation(emoji, 'me', db.user.name);
   if (window.lhSignaling && CALL.room) {
     window.lhSignaling.sendCallSignal(CALL.room, {
       from: CALL.me,
       fromName: db.user.name,
       to: 'all',
-      type: 'chat',
-      payload: { x },
+      type: 'reaction',
+      payload: { emoji },
       timestamp: Date.now()
     });
   }
+  toggleReactionPicker(false);
+}
+
+function toggleReactionPicker(force) {
+  const p = document.getElementById('reactionPicker');
+  if (!p) return;
+  const isShown = force !== undefined ? !force : p.style.display !== 'none';
+  p.style.display = isShown ? 'none' : 'flex';
+}
+
+function triggerReactionAnimation(emoji, senderId, senderName) {
+  const stage = document.getElementById('callVideoStage');
+  if (!stage) return;
+
+  const bubble = document.createElement('div');
+  bubble.textContent = emoji;
+  bubble.style.cssText = `
+    position: absolute;
+    bottom: 80px;
+    left: ${Math.floor(20 + Math.random() * 60)}%;
+    font-size: 38px;
+    pointer-events: none;
+    z-index: 50;
+    animation: floatReaction 2.2s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  `;
+  stage.appendChild(bubble);
+  setTimeout(() => bubble.remove(), 2300);
+}
+
+// Class Announcements
+function promptClassAnnouncement() {
+  if (!CALL.isHost) return;
+  const mb = document.getElementById('modalback');
+  const mc = document.getElementById('modalContent');
+  if (!mb || !mc) return;
+  mc.innerHTML = `
+    <div class="modalhead">
+      <h3 style="font-size:17px;font-weight:700;">📢 Broadcast Class Announcement</h3>
+      <button class="close" type="button" onclick="closeModal()">✕</button>
+    </div>
+    <p style="color:var(--muted);font-size:13px;margin:0 0 14px;">This message will appear immediately as a live banner on every student's screen in this classroom.</p>
+    <div class="field">
+      <label for="annText">Announcement Text</label>
+      <textarea id="annText" placeholder="e.g. Please turn to chapter 4, or mid-term quiz will start in 10 minutes..." rows="3" style="width:100%;border-radius:10px;padding:10px;border:1px solid var(--line);font-size:13px;"></textarea>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+      <button class="outline" type="button" onclick="closeModal()">Cancel</button>
+      <button class="primary" type="button" onclick="submitClassAnnouncement()">Broadcast to Class</button>
+    </div>
+  `;
+  mb.classList.add('open');
+  setTimeout(() => document.getElementById('annText')?.focus(), 50);
+}
+
+function submitClassAnnouncement() {
+  const t = document.getElementById('annText')?.value?.trim();
+  if (!t) {
+    toast('Please enter announcement text.');
+    return;
+  }
+  closeModal();
+  if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.updateCallRoom(CALL.room, { announcement: t });
+    window.lhSignaling.sendCallSignal(CALL.room, {
+      from: CALL.me,
+      fromName: db.user.name,
+      to: 'all',
+      type: 'announcement',
+      payload: { text: t },
+      timestamp: Date.now()
+    });
+  }
+  showCallAnnouncementBanner(t);
+  toast('Announcement broadcast to class');
+}
+
+function showCallAnnouncementBanner(text) {
+  const banner = document.getElementById('callAnnouncementBanner');
+  if (!banner) return;
+  if (!text) {
+    banner.style.display = 'none';
+    return;
+  }
+  banner.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;width:100%;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:18px;">📢</span>
+        <span><b>Lecturer Announcement:</b> ${esc(text)}</span>
+      </div>
+      <button type="button" onclick="document.getElementById('callAnnouncementBanner').style.display='none'" style="background:none;border:0;color:#fff;font-weight:800;font-size:16px;cursor:pointer;padding:0 6px;">✕</button>
+    </div>
+  `;
+  banner.style.display = 'flex';
+}
+
+// Synchronized Chat
+async function sendChat() {
+  const i = document.getElementById('chatIn');
+  if (!i) return;
+  const text = i.value.trim();
+  if (!text) return;
+
+  if (!CALL.chatEnabled && !CALL.isHost) {
+    toast('Chat is currently disabled by the lecturer.');
+    return;
+  }
+
   i.value = '';
-  drawChat();
+
+  if (window.lhSignaling && CALL.room) {
+    await window.lhSignaling.sendCallMessage(CALL.room, {
+      senderId: CALL.me,
+      senderName: db.user.name,
+      senderRole: CALL.isHost ? 'host' : 'student',
+      text,
+      timestamp: Date.now()
+    });
+  }
 }
 
 function drawChat() {
   const l = document.getElementById('chatLog');
   if (!l) return;
-  l.innerHTML = CALL.chat.map(m => `
-    <div style="background:rgba(255,255,255,0.06);padding:6px 10px;border-radius:8px;font-size:12px;margin-bottom:4px;">
-      <b style="color:#60a5fa;">${esc(m.n)}:</b> <span style="color:#f1f5f9;">${esc(m.x)}</span>
-    </div>
-  `).join('') || '<small style="color:#94a3b8;font-size:11px;">No messages yet. Send a message to the class.</small>';
+
+  l.innerHTML = CALL.chat.map(m => {
+    const isMe = m.senderId === CALL.me;
+    const isHost = m.senderRole === 'host';
+    const timeStr = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    return `
+      <div style="background:${isMe ? 'rgba(37,99,235,0.18)' : 'rgba(255,255,255,0.06)'};border:1px solid ${isMe ? 'rgba(37,99,235,0.4)' : 'rgba(255,255,255,0.08)'};padding:8px 12px;border-radius:12px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <b style="color:${isHost ? '#f59e0b' : '#60a5fa'};font-size:12px;">${esc(m.senderName)}</b>
+            <span class="pill" style="font-size:9px;padding:1px 5px;background:${isHost ? '#d97706' : '#1e3a8a'};color:#fff;">${isHost ? 'Host' : 'Student'}</span>
+          </div>
+          <small style="color:#64748b;font-size:10px;">${esc(timeStr)}</small>
+        </div>
+        <div style="color:#f1f5f9;font-size:13px;line-height:1.45;word-break:break-word;">${esc(m.text)}</div>
+      </div>
+    `;
+  }).join('') || '<div style="color:#94a3b8;font-size:12px;text-align:center;padding:24px 10px;">No messages yet. Send a question or note to the class.</div>';
+
   l.scrollTop = l.scrollHeight;
+}
+
+function updateChatBadge() {
+  const b = document.getElementById('chatUnreadBadge');
+  if (!b) return;
+  if (CALL.unreadChatCount > 0 && !CALL.chatOpen) {
+    b.textContent = CALL.unreadChatCount;
+    b.style.display = 'inline-block';
+  } else {
+    b.style.display = 'none';
+  }
+}
+
+function updateChatPolicyUI() {
+  const input = document.getElementById('chatIn');
+  const sendBtn = document.getElementById('chatSendBtn');
+  const policyLabel = document.getElementById('chatPolicyNotice');
+  if (!input) return;
+
+  const canChat = CALL.chatEnabled || CALL.isHost;
+  input.disabled = !canChat;
+  if (sendBtn) sendBtn.disabled = !canChat;
+
+  if (canChat) {
+    input.placeholder = 'Type a message to class…';
+    if (policyLabel) policyLabel.style.display = 'none';
+  } else {
+    input.placeholder = 'Chat has been paused by the lecturer';
+    if (policyLabel) policyLabel.style.display = 'block';
+  }
+}
+
+function toggleChatPolicy() {
+  if (!CALL.isHost) return;
+  CALL.chatEnabled = !CALL.chatEnabled;
+  if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.updateCallRoom(CALL.room, { chatEnabled: CALL.chatEnabled });
+  }
+  updateChatPolicyUI();
+  toast(CALL.chatEnabled ? 'Student chat enabled.' : 'Student chat disabled.');
+}
+
+// Drawers & Panes
+function toggleChatDrawer() {
+  CALL.chatOpen = !CALL.chatOpen;
+  if (CALL.chatOpen) {
+    CALL.participantsOpen = false;
+    CALL.unreadChatCount = 0;
+    updateChatBadge();
+  }
+  renderDrawerPanels();
+}
+
+function toggleParticipantsDrawer() {
+  CALL.participantsOpen = !CALL.participantsOpen;
+  if (CALL.participantsOpen) {
+    CALL.chatOpen = false;
+  }
+  renderDrawerPanels();
+  updateParticipantsDrawer();
+}
+
+function renderDrawerPanels() {
+  const chatDrawer = document.getElementById('callChatDrawer');
+  const partDrawer = document.getElementById('callParticipantsDrawer');
+  if (chatDrawer) chatDrawer.style.display = CALL.chatOpen ? 'flex' : 'none';
+  if (partDrawer) partDrawer.style.display = CALL.participantsOpen ? 'flex' : 'none';
+  if (CALL.chatOpen) {
+    drawChat();
+    setTimeout(() => document.getElementById('chatIn')?.focus(), 50);
+  }
+  drawControls();
+}
+
+function updateParticipantsDrawer() {
+  const listEl = document.getElementById('callParticipantsList');
+  if (!listEl) return;
+
+  const parts = CALL.participants && CALL.participants.length
+    ? [...CALL.participants]
+    : [
+        { id: CALL.me, name: db.user.name, role: CALL.isHost ? 'host' : 'student', mic: CALL.mic, cam: CALL.cam, hand: CALL.hand, handRaisedAt: CALL.handRaisedAt },
+        ...Object.values(CALL.peers).map(p => ({ id: p.id, name: p.name, role: p.role, mic: p.mic, cam: p.cam, hand: p.hand, handRaisedAt: p.handRaisedAt }))
+      ];
+
+  const handsQueue = parts.filter(p => p.hand).sort((a, b) => (a.handRaisedAt || 0) - (b.handRaisedAt || 0));
+
+  listEl.innerHTML = `
+    <!-- Raised Hands Queue -->
+    ${handsQueue.length > 0 ? `
+      <div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:14px;padding:12px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong style="color:#f59e0b;font-size:12.5px;display:flex;align-items:center;gap:6px;">
+            <span>✋</span> Raised Hands Queue (${handsQueue.length})
+          </strong>
+          ${CALL.isHost ? `
+            <button type="button" onclick="lowerAllHands()" style="background:#f59e0b;border:0;color:#fff;border-radius:6px;font-size:10.5px;font-weight:700;padding:2px 8px;cursor:pointer;">
+              Lower All
+            </button>
+          ` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${handsQueue.map(h => `
+            <div style="display:flex;justify-content:space-between;align-items:center;background:rgba(15,23,42,0.6);padding:6px 10px;border-radius:8px;">
+              <span style="font-size:12px;color:#fff;font-weight:600;">${esc(h.name)} ${h.id === CALL.me ? '(You)' : ''}</span>
+              ${CALL.isHost && h.id !== CALL.me ? `
+                <button type="button" onclick="lowerStudentHand('${h.id}')" style="background:#2563eb;color:#fff;border:0;border-radius:6px;font-size:10.5px;font-weight:700;padding:3px 8px;cursor:pointer;">
+                  Acknowledge
+                </button>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
+
+    <!-- All Participants -->
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      ${parts.map(p => {
+        const isMe = p.id === CALL.me;
+        const isHost = p.role === 'host';
+        return `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:10px;">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
+              <div style="width:32px;height:32px;border-radius:8px;background:${isHost ? 'linear-gradient(135deg,#f59e0b,#d97706)' : 'linear-gradient(135deg,#2563eb,#38bdf8)'};color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800;flex-shrink:0;">
+                ${esc(String(p.name || '?').slice(0, 2).toUpperCase())}
+              </div>
+              <div style="min-width:0;">
+                <strong style="color:#fff;font-size:13px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                  ${esc(p.name)} ${isMe ? '(You)' : ''}
+                </strong>
+                <span class="pill" style="font-size:9px;padding:1px 6px;background:${isHost ? '#d97706' : '#1e3a8a'};color:#fff;">
+                  ${isHost ? 'Host' : 'Student'}
+                </span>
+              </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+              ${p.hand ? '<span style="font-size:14px;" title="Hand raised">✋</span>' : ''}
+              <span style="font-size:14px;">${p.mic !== false ? '🎤' : '🔇'}</span>
+              <span style="font-size:14px;">${p.cam !== false ? '📹' : '📷'}</span>
+              ${CALL.isHost && !isMe ? `
+                <button type="button" onclick="muteStudent('${p.id}')" style="background:#dc2626;border:0;color:#fff;padding:4px 8px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">
+                  Mute
+                </button>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+
+    ${CALL.isHost ? `
+      <div style="margin-top:16px;border-top:1px solid #1e293b;padding-top:12px;">
+        <button type="button" class="danger" style="width:100%;min-height:42px;border-radius:10px;font-size:12.5px;font-weight:700;" onclick="muteAllStudents()">
+          🔇 Mute All Students
+        </button>
+      </div>
+    ` : ''}
+  `;
 }
 
 function drawControls() {
@@ -3434,40 +3977,84 @@ function drawControls() {
 
   c.innerHTML = `
     <!-- Microphone Toggle -->
-    <button class="${CALL.mic ? 'primary' : 'danger'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 16px;display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;" onclick="toggleAudio()">
+    <button class="${CALL.mic ? 'primary' : 'danger'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 14px;display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;" onclick="toggleAudio()">
       <span>${CALL.mic ? '🎤' : '🔇'}</span>
       <span>${CALL.mic ? 'Mute' : 'Unmute'}</span>
     </button>
 
     <!-- Camera Toggle -->
-    <button class="${CALL.cam ? 'primary' : 'danger'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 16px;display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;" onclick="toggleVideo()">
+    <button class="${CALL.cam ? 'primary' : 'danger'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 14px;display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;" onclick="toggleVideo()">
       <span>${CALL.cam ? '📹' : '📷'}</span>
       <span>${CALL.cam ? 'Stop Video' : 'Start Video'}</span>
     </button>
 
-    <!-- Camera Flip (Front/Rear) -->
-    <button class="outline" style="min-height:48px;height:48px;border-radius:12px;padding:0 14px;background:#1e293b;border-color:#334155;color:#fff;display:flex;align-items:center;gap:8px;font-size:13.5px;" onclick="switchCamera()" title="Switch between front and rear camera">
+    <!-- Camera Flip (Front/Rear for Mobile) -->
+    <button class="outline" style="min-height:48px;height:48px;border-radius:12px;padding:0 12px;background:#1e293b;border-color:#334155;color:#fff;display:flex;align-items:center;gap:6px;font-size:13px;" onclick="switchCamera()" title="Switch Front/Rear Camera">
       <span>🔄</span>
-      <span>Flip Cam</span>
+      <span>Flip</span>
     </button>
 
-    <!-- Screen Share (Desktop / Supported browsers) -->
-    <button class="${CALL.sharing ? 'danger' : 'outline'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 14px;background:#1e293b;border-color:#334155;color:#fff;display:flex;align-items:center;gap:8px;font-size:13.5px;" onclick="toggleShare()">
+    <!-- Screen Share (Desktop) -->
+    <button class="${CALL.sharing ? 'danger' : 'outline'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 12px;background:#1e293b;border-color:#334155;color:#fff;display:flex;align-items:center;gap:6px;font-size:13px;" onclick="toggleShare()">
       <span>${CALL.sharing ? '⏹' : '🖥'}</span>
       <span>${CALL.sharing ? 'Stop Share' : 'Share'}</span>
     </button>
 
-    <!-- Hand Raise -->
-    <button class="${CALL.hand ? 'primary' : 'outline'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 14px;background:${CALL.hand ? '#2563eb' : '#1e293b'};border-color:#334155;color:#fff;display:flex;align-items:center;gap:8px;font-size:13.5px;" onclick="toggleHand()">
-      <span>✋</span>
-      <span>${CALL.hand ? 'Lower Hand' : 'Raise Hand'}</span>
+    <!-- Raise Hand (Student) / Lower All (Host) -->
+    ${!CALL.isHost ? `
+      <button class="${CALL.hand ? 'primary' : 'outline'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 12px;background:${CALL.hand ? '#2563eb' : '#1e293b'};border-color:#334155;color:#fff;display:flex;align-items:center;gap:6px;font-size:13px;" onclick="toggleHand()">
+        <span>✋</span>
+        <span>${CALL.hand ? 'Lower Hand' : 'Raise Hand'}</span>
+      </button>
+    ` : `
+      <button class="outline" style="min-height:48px;height:48px;border-radius:12px;padding:0 12px;background:#1e293b;border-color:#334155;color:#fff;display:flex;align-items:center;gap:6px;font-size:13px;" onclick="promptClassAnnouncement()" title="Broadcast Class Announcement">
+        <span>📢</span>
+        <span>Broadcast</span>
+      </button>
+    `}
+
+    <!-- Emoji Reactions Trigger -->
+    <div style="position:relative;">
+      <button class="outline" style="min-height:48px;height:48px;border-radius:12px;padding:0 12px;background:#1e293b;border-color:#334155;color:#fff;display:flex;align-items:center;gap:6px;font-size:13px;" onclick="toggleReactionPicker()">
+        <span>😀</span>
+        <span>React</span>
+      </button>
+      <!-- Floating Reaction Picker -->
+      <div id="reactionPicker" style="display:none;position:absolute;bottom:56px;left:50%;transform:translateX(-50%);background:#0f172a;border:1px solid #334155;padding:8px;border-radius:14px;box-shadow:0 10px 25px rgba(0,0,0,0.5);gap:8px;z-index:60;">
+        <button type="button" onclick="sendReaction('👏')" style="background:none;border:0;font-size:22px;cursor:pointer;padding:4px;">👏</button>
+        <button type="button" onclick="sendReaction('👍')" style="background:none;border:0;font-size:22px;cursor:pointer;padding:4px;">👍</button>
+        <button type="button" onclick="sendReaction('❤️')" style="background:none;border:0;font-size:22px;cursor:pointer;padding:4px;">❤️</button>
+        <button type="button" onclick="sendReaction('💡')" style="background:none;border:0;font-size:22px;cursor:pointer;padding:4px;">💡</button>
+        <button type="button" onclick="sendReaction('🎉')" style="background:none;border:0;font-size:22px;cursor:pointer;padding:4px;">🎉</button>
+        <button type="button" onclick="sendReaction('😂')" style="background:none;border:0;font-size:22px;cursor:pointer;padding:4px;">😂</button>
+      </div>
+    </div>
+
+    <!-- Participants Drawer Button -->
+    <button class="${CALL.participantsOpen ? 'primary' : 'outline'}" style="min-height:48px;height:48px;border-radius:12px;padding:0 12px;background:${CALL.participantsOpen ? '#2563eb' : '#1e293b'};border-color:#334155;color:#fff;display:flex;align-items:center;gap:6px;font-size:13px;" onclick="toggleParticipantsDrawer()">
+      <span>👥</span>
+      <span>Class (<span id="participantBtnCount">1</span>)</span>
     </button>
 
-    <!-- Leave Call Button -->
-    <button class="danger" style="min-height:48px;height:48px;border-radius:12px;padding:0 20px;font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:8px;margin-left:auto;" onclick="leaveVideoCall()">
-      <span>🚪</span>
-      <span>Leave Call</span>
+    <!-- Chat Drawer Button with Unread Badge -->
+    <button class="${CALL.chatOpen ? 'primary' : 'outline'}" style="position:relative;min-height:48px;height:48px;border-radius:12px;padding:0 12px;background:${CALL.chatOpen ? '#2563eb' : '#1e293b'};border-color:#334155;color:#fff;display:flex;align-items:center;gap:6px;font-size:13px;" onclick="toggleChatDrawer()">
+      <span>💬</span>
+      <span>Chat</span>
+      <span id="chatUnreadBadge" style="display:${CALL.unreadChatCount > 0 ? 'inline-block' : 'none'};background:#ef4444;color:#fff;border-radius:99px;font-size:10px;font-weight:800;padding:1px 6px;margin-left:4px;">${CALL.unreadChatCount}</span>
     </button>
+
+    <!-- Leave / End Class Button -->
+    ${CALL.isHost ? `
+      <button class="danger" style="min-height:48px;height:48px;border-radius:12px;padding:0 16px;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px;margin-left:auto;" onclick="endClassForAll()">
+        <span>🚪</span>
+        <span>End Class</span>
+      </button>
+    ` : `
+      <button class="danger" style="min-height:48px;height:48px;border-radius:12px;padding:0 16px;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px;margin-left:auto;" onclick="leaveVideoCall()">
+        <span>🚪</span>
+        <span>Leave</span>
+      </button>
+    `}
   `;
 }
 
@@ -3490,7 +4077,7 @@ function renderMeetingTab(c) {
         <div class="welcome">
           <div>
             <h1>Live Video Classroom</h1>
-            <p>Start a secure video session. Students from any device or phone join using the room's access code.</p>
+            <p>Start a secure video session. Students from any phone or computer join using the room's access code.</p>
           </div>
           <button class="primary" onclick="openModal('createMeeting')">📹 Create Video Session</button>
         </div>
@@ -3554,50 +4141,81 @@ function renderMeetingTab(c) {
     return;
   }
 
-  // Active Video Room UI
+  // Active Zoom-Style Video Classroom UI
   const title = CALL.roomTitle || 'Live Classroom';
   c.innerHTML = `
-    <div class="video-room" style="margin-top:0;background:#0a0f1d;border-radius:20px;border:1px solid #1e293b;padding:18px;">
-      <!-- Floating Autoplay Unmute Banner if mobile browser blocked audio -->
+    <div class="video-room" style="position:relative;background:#070d19;border-radius:20px;border:1px solid #1e293b;padding:16px;min-height:75vh;display:flex;flex-direction:column;">
+      
+      <!-- Announcement Banner -->
+      <div id="callAnnouncementBanner" style="display:none;background:#2563eb;color:#fff;padding:10px 16px;border-radius:12px;margin-bottom:12px;align-items:center;justify-content:space-between;"></div>
+
+      <!-- Autoplay Unmute Banner for mobile browsers -->
       <div id="audioUnlockPrompt" style="display:none;background:#2563eb;color:#fff;padding:10px 16px;border-radius:12px;margin-bottom:12px;align-items:center;justify-content:space-between;cursor:pointer;" onclick="unlockAudioManually()">
-        <span style="font-weight:600;font-size:13px;">🔊 Audio playback was paused by browser. Tap here to enable sound</span>
+        <span style="font-weight:600;font-size:13px;">🔊 Audio was paused by browser. Tap here to enable sound</span>
         <span style="font-weight:800;background:#fff;color:#2563eb;padding:3px 10px;border-radius:6px;font-size:11px;">Enable Sound</span>
       </div>
 
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding-bottom:14px;border-bottom:1px solid #1e293b;">
-        <div style="display:flex;align-items:center;gap:10px;">
-          <strong id="callTitle" style="font-size:17px;color:#fff;">${esc(title)}</strong>
+      <!-- Top Classroom Bar -->
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding-bottom:12px;border-bottom:1px solid #1e293b;">
+        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+          <strong id="callTitle" style="font-size:16px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(title)}</strong>
           <span id="callStatusIndicator" class="pill" style="background:#2563eb;color:#fff;font-size:11px;">Connecting…</span>
+          <span id="handQueueBadge" class="pill" style="display:none;background:#f59e0b;color:#fff;font-weight:800;font-size:11px;">✋ 0</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span class="pill" style="background:#059669;color:#fff;font-weight:700;">⏱ <span id="callTimer">00:00</span></span>
-          <span class="pill" style="background:#1e293b;color:#94a3b8;font-weight:700;">👥 <span id="callCount">1</span> in call</span>
+          <span class="pill" style="background:#1e293b;color:#94a3b8;font-weight:700;">👥 <span id="callCount">1</span> in class</span>
           <span class="pill" style="background:#7c3aed;color:#fff;cursor:pointer;font-weight:700;" onclick="copyText('${esc(CALL.room)}')" title="Tap to copy code">
             Code: <b>${esc(showCode(CALL.room))}</b> 📋
           </span>
         </div>
       </div>
 
-      <div class="call-layout" style="margin-top:14px;">
-        <div style="display:flex;flex-direction:column;gap:14px;">
-          <!-- Video tile grid with mobile-first aspect ratios -->
-          <div class="video-grid" id="callGrid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:14px;min-height:300px;"></div>
-          <!-- Accessible controls dock with min 48px targets -->
-          <div id="callControls" style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;padding:12px;background:#0d1322;border:1px solid #1e293b;border-radius:16px;"></div>
+      <!-- Main Stage with Video Grid & Slide-Out Panels -->
+      <div style="display:flex;flex:1;gap:14px;margin-top:14px;min-height:480px;position:relative;overflow:hidden;">
+        
+        <!-- Video Grid Stage -->
+        <div id="callVideoStage" style="flex:1;display:flex;flex-direction:column;gap:12px;min-width:0;position:relative;">
+          <div class="video-grid" id="callGrid" style="flex:1;display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:12px;align-content:start;"></div>
+          <!-- Bottom Controls Dock -->
+          <div id="callControls" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;padding:10px;background:#0b1324;border:1px solid #1e293b;border-radius:16px;"></div>
         </div>
 
-        <!-- Chat & Discussion Panel -->
-        <div class="call-side" style="display:flex;flex-direction:column;height:100%;min-height:380px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;border-bottom:1px solid #1e293b;margin-bottom:8px;">
-            <strong style="color:#fff;font-size:14px;">Class Chat</strong>
-            <small style="color:#94a3b8;font-size:11px;">Real-time</small>
+        <!-- Participants Slide-out Drawer -->
+        <div id="callParticipantsDrawer" style="display:none;width:320px;max-width:100%;background:#0b1324;border:1px solid #1e293b;border-radius:16px;padding:14px;flex-direction:column;flex-shrink:0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid #1e293b;margin-bottom:10px;">
+            <strong style="color:#fff;font-size:14px;">Class Participants</strong>
+            <button type="button" onclick="toggleParticipantsDrawer()" style="background:none;border:0;color:#94a3b8;font-size:16px;cursor:pointer;">✕</button>
+          </div>
+          <div id="callParticipantsList" style="flex:1;overflow-y:auto;"></div>
+        </div>
+
+        <!-- Real-Time Chat Drawer -->
+        <div id="callChatDrawer" style="display:none;width:320px;max-width:100%;background:#0b1324;border:1px solid #1e293b;border-radius:16px;padding:14px;flex-direction:column;flex-shrink:0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid #1e293b;margin-bottom:10px;">
+            <div>
+              <strong style="color:#fff;font-size:14px;">Class Chat</strong>
+              <small style="display:block;color:#64748b;font-size:11px;">Real-time synchronized</small>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${CALL.isHost ? `
+                <button type="button" onclick="toggleChatPolicy()" style="background:#1e293b;border:1px solid #334155;color:#fff;font-size:10px;padding:3px 8px;border-radius:6px;cursor:pointer;" title="Toggle student chat permission">
+                  ${CALL.chatEnabled ? 'Disable Chat' : 'Enable Chat'}
+                </button>
+              ` : ''}
+              <button type="button" onclick="toggleChatDrawer()" style="background:none;border:0;color:#94a3b8;font-size:16px;cursor:pointer;">✕</button>
+            </div>
+          </div>
+          <div id="chatPolicyNotice" style="display:${CALL.chatEnabled ? 'none' : 'block'};background:rgba(220,38,38,0.12);border:1px solid rgba(220,38,38,0.3);color:#f87171;font-size:11px;padding:6px 10px;border-radius:8px;margin-bottom:8px;">
+            Student chat has been paused by the lecturer.
           </div>
           <div id="chatLog" class="chat-log" style="flex:1;overflow-y:auto;padding:4px 0;"></div>
           <div style="display:flex;gap:6px;margin-top:8px;">
             <input id="chatIn" placeholder="Type a message to class…" onkeydown="if(event.key==='Enter')sendChat()" style="flex:1;min-width:0;border-radius:10px;background:#1e293b;border:1px solid #334155;color:#fff;padding:10px 12px;font-size:13px;">
-            <button class="primary" style="border-radius:10px;padding:0 16px;min-height:42px;" onclick="sendChat()">Send</button>
+            <button id="chatSendBtn" class="primary" style="border-radius:10px;padding:0 14px;min-height:42px;" onclick="sendChat()">Send</button>
           </div>
         </div>
+
       </div>
     </div>
   `;
@@ -3624,10 +4242,103 @@ function newMeetingCode(mid) {
   renderMeetingTab(document.getElementById('appContent'));
 }
 
-function leaveVideoCall() {
-  endCall();
+function endClassForAll() {
+  if (!CALL.isHost) return;
+  const mb = document.getElementById('modalback');
+  const mc = document.getElementById('modalContent');
+  if (!mb || !mc) {
+    confirmEndClassForAll();
+    return;
+  }
+  mc.innerHTML = `
+    <div class="modalhead">
+      <h3 style="font-size:17px;font-weight:700;color:var(--red);">End Live Session for All Students?</h3>
+      <button class="close" type="button" onclick="closeModal()">✕</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 18px;line-height:1.5;">
+      This will conclude the live lecture and disconnect all participants from this room. Course materials, submissions, and chat history will remain safe.
+    </p>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="outline" type="button" onclick="closeModal()">Keep Class Open</button>
+      <button class="danger" type="button" style="background:#dc2626;color:#fff;border-radius:10px;padding:10px 16px;" onclick="confirmEndClassForAll()">End Class for Everyone</button>
+    </div>
+  `;
+  mb.classList.add('open');
+}
+
+async function confirmEndClassForAll() {
+  closeModal();
+  toast('Ending classroom session for all participants…');
+  await endCall(true);
+  switchTab('lecturer-dash');
+}
+
+async function leaveVideoCall() {
+  await endCall(false);
   toast('Left the live video call.');
   switchTab(db.user.role === 'lecturer' ? 'lecturer-dash' : 'student-dash');
+}
+
+async function endCall(endForEveryone = false) {
+  if (CALL.timer) {
+    clearInterval(CALL.timer);
+    CALL.timer = null;
+  }
+  if (CALL.localAudioAnalyserCleanup) {
+    try { CALL.localAudioAnalyserCleanup(); } catch (e) {}
+    CALL.localAudioAnalyserCleanup = null;
+  }
+  Object.values(CALL.peers).forEach(p => {
+    if (p.analyserCleanup) {
+      try { p.analyserCleanup(); } catch (e) {}
+    }
+    if (p.pc) {
+      try { p.pc.close(); } catch (e) {}
+    }
+  });
+  CALL.peers = {};
+  if (CALL.stream) {
+    CALL.stream.getTracks().forEach(t => {
+      try { t.stop(); } catch (e) {}
+    });
+    CALL.stream = null;
+  }
+  if (CALL.screen) {
+    CALL.screen.getTracks().forEach(t => {
+      try { t.stop(); } catch (e) {}
+    });
+    CALL.screen = null;
+  }
+  localStream = null;
+
+  if (CALL.unsubSignals) {
+    try { CALL.unsubSignals(); } catch (e) {}
+    CALL.unsubSignals = null;
+  }
+  if (CALL.unsubRoom) {
+    try { CALL.unsubRoom(); } catch (e) {}
+    CALL.unsubRoom = null;
+  }
+  if (CALL.unsubParts) {
+    try { CALL.unsubParts(); } catch (e) {}
+    CALL.unsubParts = null;
+  }
+  if (CALL.unsubChat) {
+    try { CALL.unsubChat(); } catch (e) {}
+    CALL.unsubChat = null;
+  }
+
+  if (window.lhSignaling && CALL.room) {
+    try {
+      await window.lhSignaling.leaveCallRoom(CALL.room, CALL.me, !!(CALL.isHost && endForEveryone));
+    } catch (e) {}
+  }
+
+  CALL.room = null;
+  CALL.mediaReady = false;
+  CALL.status = 'idle';
+  CALL.participants = [];
+  CALL.chat = [];
 }
 
 
