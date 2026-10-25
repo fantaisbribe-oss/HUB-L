@@ -272,7 +272,11 @@ export async function getCallRoom(roomCode: string) {
   return snap.exists() ? snap.data() : null;
 }
 
-export function listenCallRoom(roomCode: string, onUpdate: (roomData: any) => void) {
+export function listenCallRoom(
+  roomCode: string, 
+  onUpdate: (roomData: any) => void,
+  onError?: (err: any) => void
+) {
   if (!firestoreDb) return () => {};
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const roomRef = doc(firestoreDb, 'calls', cleanCode);
@@ -284,6 +288,7 @@ export function listenCallRoom(roomCode: string, onUpdate: (roomData: any) => vo
     }
   }, (err) => {
     console.warn(`[LectureHub] Room listen error on ${cleanCode}:`, err);
+    if (onError) onError(err);
   });
 }
 
@@ -322,7 +327,11 @@ export async function removeParticipant(roomCode: string, participantId: string)
   }
 }
 
-export function listenParticipants(roomCode: string, onUpdate: (participants: CallParticipant[]) => void) {
+export function listenParticipants(
+  roomCode: string, 
+  onUpdate: (participants: CallParticipant[]) => void,
+  onError?: (err: any) => void
+) {
   if (!firestoreDb) return () => {};
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const partCol = collection(firestoreDb, 'calls', cleanCode, 'participants');
@@ -344,6 +353,7 @@ export function listenParticipants(roomCode: string, onUpdate: (participants: Ca
     onUpdate(list);
   }, (err) => {
     console.warn(`[LectureHub] Participant listen error on ${cleanCode}:`, err);
+    if (onError) onError(err);
   });
 }
 
@@ -362,7 +372,8 @@ export function listenCallSignals(
   myPeerId: string, 
   isHost: boolean,
   sinceTimestamp: number,
-  onSignal: (signal: CallSignal, signalId: string) => void
+  onSignal: (signal: CallSignal, signalId: string) => void,
+  onError?: (err: any) => void
 ) {
   if (!firestoreDb) return () => {};
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -397,6 +408,7 @@ export function listenCallSignals(
     });
   }, (err) => {
     console.warn(`[LectureHub Signaling Error] on room ${cleanCode}:`, err);
+    if (onError) onError(err);
   });
 
   return unsub;
@@ -414,7 +426,8 @@ export async function sendCallMessage(roomCode: string, message: CallMessage) {
 
 export function listenCallMessages(
   roomCode: string,
-  onMessage: (message: CallMessage, messageId: string) => void
+  onMessage: (message: CallMessage, messageId: string) => void,
+  onError?: (err: any) => void
 ) {
   if (!firestoreDb) return () => {};
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -433,6 +446,7 @@ export function listenCallMessages(
     });
   }, (err) => {
     console.warn(`[LectureHub Messages Error] on room ${cleanCode}:`, err);
+    if (onError) onError(err);
   });
 
   return unsub;
