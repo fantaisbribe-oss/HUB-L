@@ -2333,29 +2333,16 @@ function closeModal() {
 
 const RTC_CONFIG = {
   iceServers: [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302', 'stun:stun3.l.google.com:19302', 'stun:stun4.l.google.com:19302'] },
     { urls: ['stun:stun.cloudflare.com:3478'] },
-    { urls: ['stun:global.turn.twilio.com:3478?transport=udp'] },
-    // Public free relay TURN for restrictive cellular CGNAT networks
+    // Metered TURN relays for carrier-grade symmetric NAT traversal across cellular networks
     ...(window.CUSTOM_TURN_SERVERS || [
-      {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      {
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      }
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
     ])
   ],
-  iceCandidatePoolSize: 10
+  iceCandidatePoolSize: 0 // Do not pre-pool on mobile WebKit/Blink to prevent connection freeze
 };
 
 const CALL = {
@@ -2364,6 +2351,8 @@ const CALL = {
   courseCode: '',
   me: '',
   isHost: false,
+  status: 'idle', // 'idle' | 'validating' | 'requesting_media' | 'waiting_for_host' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'ended'
+  statusDetail: '',
   stream: null,
   screen: null,
   facingMode: 'user', // 'user' or 'environment'
@@ -2371,12 +2360,16 @@ const CALL = {
   cam: true,
   mic: true,
   hand: false,
-  status: 'idle', // 'idle' | 'starting' | 'waiting' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
   peers: {}, // { [peerId]: { pc, name, role, stream, mic, cam, hand, dc, connectionState, iceQueue: [] } }
+  pendingCandidates: {}, // { [peerId]: RTCIceCandidate[] } buffered before peer connection instantiated
+  pendingSignals: [], // buffered before media permissions resolve
+  mediaReady: false,
   chat: [],
   t0: 0,
   timer: null,
-  unsubSignals: null
+  unsubSignals: null,
+  unsubRoom: null,
+  unsubParts: null
 };
 
 const normCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -2422,6 +2415,37 @@ function unlockAudioManually() {
   toast('Audio enabled');
 }
 
+function evaluateGlobalCallStatus() {
+  const peers = Object.values(CALL.peers);
+  const connectedCount = peers.filter(p => p.connectionState === 'connected').length;
+  const connectingCount = peers.filter(p => p.connectionState === 'connecting').length;
+  const failedCount = peers.filter(p => p.connectionState === 'failed').length;
+
+  if (CALL.status === 'ended' || CALL.status === 'waiting_for_host') {
+    drawStatusBadge();
+    return;
+  }
+
+  if (connectedCount > 0) {
+    CALL.status = 'connected';
+    CALL.statusDetail = `${connectedCount} participant${connectedCount > 1 ? 's' : ''} connected`;
+  } else if (connectingCount > 0) {
+    CALL.status = 'connecting';
+    CALL.statusDetail = 'Establishing secure WebRTC peer connection…';
+  } else if (failedCount > 0 && peers.length > 0) {
+    CALL.status = 'failed';
+    CALL.statusDetail = 'WebRTC connection failed. Tap Retry below.';
+  } else if (CALL.isHost) {
+    CALL.status = 'waiting';
+    CALL.statusDetail = 'Waiting for students to enter room code';
+  } else {
+    CALL.status = 'connecting';
+    CALL.statusDetail = 'Connecting to lecturer stream…';
+  }
+
+  drawStatusBadge();
+}
+
 function updatePeerStatusUI(peerId, state) {
   const badge = document.querySelector(`#tile_${CSS.escape(peerId)} .peer-state-badge`);
   if (!badge) return;
@@ -2443,24 +2467,45 @@ function updatePeerStatusUI(peerId, state) {
 function drawStatusBadge() {
   const statusEl = document.getElementById('callStatusIndicator');
   if (!statusEl) return;
-  const connectedCount = Object.values(CALL.peers).filter(p => p.connectionState === 'connected').length;
-  if (connectedCount > 0) {
-    statusEl.textContent = '● Connected';
+
+  const s = CALL.status;
+  if (s === 'connected') {
+    statusEl.textContent = '● Live Connected';
     statusEl.className = 'pill';
     statusEl.style.background = '#059669';
     statusEl.style.color = '#fff';
-  } else if (Object.keys(CALL.peers).length > 0) {
-    statusEl.textContent = 'Connecting…';
+  } else if (s === 'connecting') {
+    statusEl.textContent = 'Connecting Media…';
     statusEl.className = 'pill';
     statusEl.style.background = '#d97706';
     statusEl.style.color = '#fff';
+  } else if (s === 'reconnecting') {
+    statusEl.textContent = 'Reconnecting…';
+    statusEl.className = 'pill';
+    statusEl.style.background = '#d97706';
+    statusEl.style.color = '#fff';
+  } else if (s === 'failed') {
+    statusEl.textContent = 'Connection Failed';
+    statusEl.className = 'pill';
+    statusEl.style.background = '#dc2626';
+    statusEl.style.color = '#fff';
+  } else if (s === 'waiting_for_host') {
+    statusEl.textContent = 'Waiting for Lecturer';
+    statusEl.className = 'pill';
+    statusEl.style.background = '#6366f1';
+    statusEl.style.color = '#fff';
+  } else if (s === 'ended') {
+    statusEl.textContent = 'Session Ended';
+    statusEl.className = 'pill';
+    statusEl.style.background = '#64748b';
+    statusEl.style.color = '#fff';
   } else if (CALL.isHost) {
-    statusEl.textContent = 'Waiting for students…';
+    statusEl.textContent = 'Waiting for Students…';
     statusEl.className = 'pill';
     statusEl.style.background = '#2563eb';
     statusEl.style.color = '#fff';
   } else {
-    statusEl.textContent = 'Joining session…';
+    statusEl.textContent = 'Connecting…';
     statusEl.className = 'pill';
     statusEl.style.background = '#2563eb';
     statusEl.style.color = '#fff';
@@ -2472,14 +2517,16 @@ function setupDataChannel(peerId, dc) {
   if (!peer) return;
   peer.dc = dc;
   dc.onopen = () => {
-    dc.send(JSON.stringify({ t: 'state', name: db.user.name, mic: CALL.mic, cam: CALL.cam, hand: CALL.hand }));
+    try {
+      dc.send(JSON.stringify({ t: 'state', name: db.user.name, mic: CALL.mic, cam: CALL.cam, hand: CALL.hand }));
+    } catch (e) {}
   };
   dc.onmessage = e => {
     try {
       const m = JSON.parse(e.data);
       if (m.t === 'state') {
         Object.assign(peer, { name: m.name || peer.name, mic: m.mic !== false, cam: m.cam !== false, hand: !!m.hand });
-        drawTiles();
+        updatePeerTileUI(peerId);
       } else if (m.t === 'chat') {
         CALL.chat.push({ n: peer.name, x: m.x });
         drawChat();
@@ -2501,11 +2548,21 @@ function sendAllData(obj) {
 
 function dropPeer(peerId) {
   const p = CALL.peers[peerId];
-  if (!p) return;
-  try { p.pc.close(); } catch (e) {}
-  delete CALL.peers[peerId];
-  drawTiles();
-  drawStatusBadge();
+  if (p) {
+    try { p.pc.close(); } catch (e) {}
+    delete CALL.peers[peerId];
+  }
+  const el = document.getElementById(`tile_${peerId}`);
+  if (el) el.remove();
+  evaluateGlobalCallStatus();
+  updateCallParticipantCount();
+}
+
+function updateCallParticipantCount() {
+  const countEl = document.getElementById('callCount');
+  if (countEl) {
+    countEl.textContent = Object.keys(CALL.peers).length + 1;
+  }
 }
 
 function createPeerConnection(peerId, peerName, isInitiator) {
@@ -2529,25 +2586,39 @@ function createPeerConnection(peerId, peerName, isInitiator) {
   };
   CALL.peers[peerId] = peer;
 
-  // Add local tracks to peer connection
+  // Transfer any pending candidates buffered before peer was instantiated
+  if (CALL.pendingCandidates[peerId] && CALL.pendingCandidates[peerId].length) {
+    peer.iceQueue.push(...CALL.pendingCandidates[peerId]);
+    delete CALL.pendingCandidates[peerId];
+  }
+
+  // Add all local audio & video tracks to the peer connection
   if (CALL.stream) {
     CALL.stream.getTracks().forEach(track => {
-      try { pc.addTrack(track, CALL.stream); } catch (e) { console.warn('addTrack:', e); }
+      try {
+        pc.addTrack(track, CALL.stream);
+      } catch (e) {
+        console.warn(`[RTCPeerConnection] addTrack error for ${peerId}:`, e);
+      }
     });
   }
 
-  // Handle remote track
+  // Handle incoming remote media tracks safely (Unified-Plan & mobile stream bundling)
   pc.ontrack = event => {
     if (event.streams && event.streams[0]) {
       peer.stream = event.streams[0];
-      drawTiles();
-      playRemoteAudio();
+    } else if (event.track) {
+      const existing = peer.stream.getTracks().find(t => t.id === event.track.id);
+      if (!existing) peer.stream.addTrack(event.track);
     }
+    syncPeerVideoElement(peerId, peer.stream);
+    playRemoteAudio();
+    updatePeerTileUI(peerId);
   };
 
-  // Handle trickle ICE candidates
+  // Trickle ICE candidates back to the specific remote peer via Firestore
   pc.onicecandidate = event => {
-    if (event.candidate && window.lhSignaling) {
+    if (event.candidate && window.lhSignaling && CALL.room) {
       window.lhSignaling.sendCallSignal(CALL.room, {
         from: CALL.me,
         fromName: db.user.name,
@@ -2559,45 +2630,50 @@ function createPeerConnection(peerId, peerName, isInitiator) {
     }
   };
 
-  // Monitor connection states
+  // Track state transitions accurately
   pc.onconnectionstatechange = () => {
     peer.connectionState = pc.connectionState;
-    updatePeerStatusUI(peerId, pc.connectionState);
+    updatePeerTileUI(peerId);
+    evaluateGlobalCallStatus();
+
     if (pc.connectionState === 'connected') {
-      CALL.status = 'connected';
       toast(`Connected with ${peer.name}`);
-    } else if (pc.connectionState === 'disconnected') {
-      CALL.status = 'reconnecting';
+      playRemoteAudio();
     } else if (pc.connectionState === 'failed') {
-      CALL.status = 'failed';
+      console.warn(`[WebRTC] Connection failed with ${peerId}, initiating ICE restart`);
+      tryIceRestart(peerId);
     } else if (pc.connectionState === 'closed') {
       dropPeer(peerId);
     }
-    drawTiles();
-    drawStatusBadge();
   };
 
   pc.oniceconnectionstatechange = () => {
     if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-      CALL.status = 'connected';
+      playRemoteAudio();
     } else if (pc.iceConnectionState === 'failed') {
       tryIceRestart(peerId);
     }
-    drawTiles();
-    drawStatusBadge();
+    evaluateGlobalCallStatus();
+    updatePeerTileUI(peerId);
   };
 
-  // Setup data channel
+  // Setup WebRTC DataChannel for low-latency chat & state sync
   if (isInitiator) {
     try {
       const dc = pc.createDataChannel('lh_data', { ordered: true });
       setupDataChannel(peerId, dc);
-    } catch (e) { console.warn(e); }
+    } catch (e) {
+      console.warn('createDataChannel error:', e);
+    }
   } else {
     pc.ondatachannel = event => {
       setupDataChannel(peerId, event.channel);
     };
   }
+
+  syncPeerVideoElement(peerId, peer.stream);
+  updatePeerTileUI(peerId);
+  evaluateGlobalCallStatus();
 
   return peer;
 }
@@ -2608,7 +2684,7 @@ async function tryIceRestart(peerId) {
   try {
     const offer = await peer.pc.createOffer({ iceRestart: true });
     await peer.pc.setLocalDescription(offer);
-    if (window.lhSignaling) {
+    if (window.lhSignaling && CALL.room) {
       window.lhSignaling.sendCallSignal(CALL.room, {
         from: CALL.me,
         fromName: db.user.name,
@@ -2624,39 +2700,50 @@ async function tryIceRestart(peerId) {
 }
 
 async function addOrQueueCandidate(peerId, candidateData) {
-  const peer = CALL.peers[peerId];
-  if (!peer) return;
+  if (!candidateData || !candidateData.candidate) return;
   const candidate = new RTCIceCandidate(candidateData);
-  if (peer.pc.remoteDescription && peer.pc.remoteDescription.type) {
-    try {
-      await peer.pc.addIceCandidate(candidate);
-    } catch (e) {
-      console.warn('addIceCandidate error:', e);
+  const peer = CALL.peers[peerId];
+
+  if (peer && peer.pc) {
+    if (peer.pc.remoteDescription && peer.pc.remoteDescription.type) {
+      try {
+        await peer.pc.addIceCandidate(candidate);
+      } catch (e) {
+        console.warn(`[ICE] add candidate to ${peerId} error:`, e);
+      }
+    } else {
+      peer.iceQueue.push(candidate);
     }
   } else {
-    peer.iceQueue.push(candidate);
+    // Peer connection not created yet: buffer candidate until offer is handled
+    if (!CALL.pendingCandidates[peerId]) {
+      CALL.pendingCandidates[peerId] = [];
+    }
+    CALL.pendingCandidates[peerId].push(candidate);
   }
 }
 
 async function flushIceQueue(peerId) {
   const peer = CALL.peers[peerId];
-  if (!peer || !peer.iceQueue.length) return;
+  if (!peer || !peer.pc || !peer.iceQueue.length) return;
   const queue = [...peer.iceQueue];
   peer.iceQueue = [];
   for (const cand of queue) {
     try {
       await peer.pc.addIceCandidate(cand);
     } catch (e) {
-      console.warn('flush candidate error:', e);
+      console.warn(`[ICE] flush candidate for ${peerId} error:`, e);
     }
   }
 }
 
 async function onIncomingSignal(sig, sigId) {
-  if (!CALL.room || !CALL.stream || !sig) return;
+  if (!CALL.room || !sig) return;
   if (sig.from === CALL.me) return;
-  // If target specified, must match me or 'all' or 'host'
-  if (sig.to && sig.to !== CALL.me && sig.to !== 'all' && !(sig.to === 'host' && CALL.isHost)) {
+
+  // If local media is still initializing, buffer incoming signal to prevent dropping
+  if (!CALL.mediaReady) {
+    CALL.pendingSignals.push(sig);
     return;
   }
 
@@ -2664,13 +2751,17 @@ async function onIncomingSignal(sig, sigId) {
   const senderName = sig.fromName || 'Participant';
 
   if (sig.type === 'join') {
-    // When student joins, host initiates WebRTC offer
+    // When student joins, Host creates peer connection and sends WebRTC offer
     if (CALL.isHost) {
       const peer = createPeerConnection(senderId, senderName, true);
       try {
-        const offer = await peer.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+        const offer = await peer.pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
         await peer.pc.setLocalDescription(offer);
-        if (window.lhSignaling) {
+
+        if (window.lhSignaling && CALL.room) {
           window.lhSignaling.sendCallSignal(CALL.room, {
             from: CALL.me,
             fromName: db.user.name,
@@ -2680,11 +2771,21 @@ async function onIncomingSignal(sig, sigId) {
             timestamp: Date.now()
           });
         }
-        drawTiles();
-        drawStatusBadge();
       } catch (err) {
-        console.error('Error creating offer:', err);
+        console.error('Error creating offer for joiner:', err);
       }
+    }
+  } else if (sig.type === 'host_ready') {
+    // If student was waiting for host, re-announce join now that host is ready
+    if (!CALL.isHost) {
+      window.lhSignaling.sendCallSignal(CALL.room, {
+        from: CALL.me,
+        fromName: db.user.name,
+        to: 'host',
+        type: 'join',
+        payload: {},
+        timestamp: Date.now()
+      });
     }
   } else if (sig.type === 'offer') {
     // Student receives offer from host
@@ -2692,9 +2793,11 @@ async function onIncomingSignal(sig, sigId) {
     try {
       await peer.pc.setRemoteDescription(new RTCSessionDescription(sig.payload));
       await flushIceQueue(senderId);
+
       const answer = await peer.pc.createAnswer();
       await peer.pc.setLocalDescription(answer);
-      if (window.lhSignaling) {
+
+      if (window.lhSignaling && CALL.room) {
         window.lhSignaling.sendCallSignal(CALL.room, {
           from: CALL.me,
           fromName: db.user.name,
@@ -2704,19 +2807,16 @@ async function onIncomingSignal(sig, sigId) {
           timestamp: Date.now()
         });
       }
-      drawTiles();
-      drawStatusBadge();
     } catch (err) {
-      console.error('Error handling offer:', err);
+      console.error('Error handling offer from host:', err);
     }
   } else if (sig.type === 'answer') {
+    // Host receives answer from student
     const peer = CALL.peers[senderId];
     if (peer && peer.pc.signalingState === 'have-local-offer') {
       try {
         await peer.pc.setRemoteDescription(new RTCSessionDescription(sig.payload));
         await flushIceQueue(senderId);
-        drawTiles();
-        drawStatusBadge();
       } catch (err) {
         console.error('Error handling answer:', err);
       }
@@ -2731,7 +2831,7 @@ async function onIncomingSignal(sig, sigId) {
         cam: sig.payload.cam !== false,
         hand: !!sig.payload.hand
       });
-      drawTiles();
+      updatePeerTileUI(senderId);
     }
   } else if (sig.type === 'chat') {
     CALL.chat.push({ n: senderName, x: sig.payload.x });
@@ -2739,6 +2839,88 @@ async function onIncomingSignal(sig, sigId) {
   } else if (sig.type === 'bye') {
     dropPeer(senderId);
     toast(`${senderName} left the session`);
+  }
+}
+
+async function flushPendingSignals() {
+  if (!CALL.pendingSignals.length) return;
+  const list = [...CALL.pendingSignals];
+  CALL.pendingSignals = [];
+  for (const s of list) {
+    try {
+      await onIncomingSignal(s, 'buffered');
+    } catch (e) {
+      console.warn('Buffered signal error:', e);
+    }
+  }
+}
+
+function showMediaPermissionError(err) {
+  const c = document.getElementById('appContent');
+  if (!c) return;
+
+  const isDenied = err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+  c.innerHTML = `
+    <div class="panel" style="max-width:540px;margin:30px auto;padding:32px 24px;border-radius:20px;text-align:center;">
+      <div style="width:68px;height:68px;border-radius:20px;background:#fee2e2;color:#dc2626;display:grid;place-items:center;font-size:32px;margin:0 auto 16px;">📷</div>
+      <h2 style="font-size:20px;margin-bottom:8px;">Camera & Microphone Access Required</h2>
+      <p style="color:var(--muted);font-size:14px;line-height:1.55;margin-bottom:20px;">
+        ${isDenied 
+          ? 'Your browser blocked camera and microphone access. To join live video classes, tap the <b>lock or site settings icon</b> in your browser address bar and change Camera & Microphone to <b>Allow</b>.' 
+          : 'Could not connect to camera or microphone. Check that no other application is using your camera.'}
+      </p>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+        <button class="primary" style="min-height:50px;padding:0 24px;border-radius:14px;font-weight:700;" onclick="joinByCode()">
+          🔄 Retry Connection
+        </button>
+        <button class="outline" style="min-height:50px;padding:0 20px;border-radius:14px;" onclick="renderMeetingTab(document.getElementById('appContent'))">
+          Back to Sessions
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function showWaitingForLecturerView(code, meetingRecord) {
+  const c = document.getElementById('appContent');
+  if (!c) return;
+
+  const title = meetingRecord ? meetingRecord.title : 'Live Classroom';
+  c.innerHTML = `
+    <div class="panel" style="max-width:520px;margin:28px auto;text-align:center;padding:34px 24px;border-radius:20px;">
+      <div style="width:68px;height:68px;border-radius:20px;background:#eff6ff;color:#2563eb;display:grid;place-items:center;font-size:32px;margin:0 auto 16px;">⏳</div>
+      <h2 style="font-size:20px;margin-bottom:6px;">Class Has Not Started Yet</h2>
+      <p style="color:var(--muted);font-size:14px;line-height:1.55;margin-bottom:18px;">
+        You entered access code <b style="color:var(--ink);">${showCode(code)}</b> for <b>${esc(title)}</b>.<br>
+        Your lecturer has not opened this live video session yet.
+      </p>
+      
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:14px;margin-bottom:24px;font-size:13px;color:#1d4ed8;line-height:1.5;text-align:left;">
+        <b>Automatic Admission Active:</b> Please keep this screen open. As soon as your lecturer taps "Start Live Session", you will be admitted automatically.
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:center;">
+        <button class="primary" style="min-height:48px;border-radius:12px;padding:0 20px;" onclick="startCall('${esc(code)}', false)">
+          🔄 Check Again Now
+        </button>
+        <button class="outline" style="min-height:48px;border-radius:12px;padding:0 18px;" onclick="renderMeetingTab(document.getElementById('appContent'))">
+          Cancel & Return
+        </button>
+      </div>
+    </div>
+  `;
+
+  // Real-time listener: Auto-admit student when lecturer starts the session!
+  if (window.lhSignaling) {
+    if (CALL.unsubRoom) {
+      try { CALL.unsubRoom(); } catch (e) {}
+    }
+    CALL.unsubRoom = window.lhSignaling.listenCallRoom(code, (roomData) => {
+      if (roomData && roomData.active) {
+        toast('Lecturer started the session! Connecting now…');
+        startCall(code, false);
+      }
+    });
   }
 }
 
@@ -2755,67 +2937,97 @@ async function startCall(codeIn, asHost) {
     return;
   }
 
-  // Access control: verify student enrollment if course-restricted
-  const meetingRecord = (db.meetings || []).find(m => m.accessCode === code);
-  if (!asHost && meetingRecord && meetingRecord.courseCode) {
-    const course = courseByCode(meetingRecord.courseCode);
-    if (course && typeof studentEnrollments === 'function') {
-      const isEnrolled = studentEnrollments(db.user.id).some(e => String(e.courseId) === String(course.id));
-      if (!isEnrolled) {
-        toast(`This call is restricted to students registered in ${course.code}.`);
-        return;
-      }
+  // 1. Session Validation & Course Authorization
+  const meetingRecord = (db.meetings || []).find(m => normCode(m.accessCode) === code);
+  let cloudRoom = null;
+  if (window.lhSignaling) {
+    try {
+      cloudRoom = await window.lhSignaling.getCallRoom(code);
+    } catch (e) {
+      console.warn('getCallRoom error:', e);
     }
   }
 
+  const targetCourseCode = (meetingRecord && meetingRecord.courseCode) || (cloudRoom && cloudRoom.courseCode) || '';
+  const roomTitle = (meetingRecord && meetingRecord.title) || (cloudRoom && cloudRoom.title) || 'Live Classroom';
+
+  // If student: verify meeting existence and authorization
+  if (!asHost) {
+    if (!meetingRecord && !cloudRoom) {
+      toast('Session code not found. Please verify the code with your lecturer.');
+      return;
+    }
+
+    // Verify course enrollment
+    if (targetCourseCode) {
+      const course = courseByCode(targetCourseCode);
+      if (course && typeof studentEnrollments === 'function') {
+        const isEnrolled = studentEnrollments(db.user.id).some(e => String(e.courseId) === String(course.id));
+        if (!isEnrolled) {
+          toast(`Access Restricted: You are not enrolled in ${course.code}. Please register for this course first.`);
+          return;
+        }
+      }
+    }
+
+    // Check if lecturer has started the session
+    if (!cloudRoom || !cloudRoom.active) {
+      showWaitingForLecturerView(code, meetingRecord);
+      return;
+    }
+  }
+
+  // 2. Initialize Call State
+  CALL.room = code;
+  CALL.roomTitle = roomTitle;
+  CALL.courseCode = targetCourseCode;
+  CALL.me = (asHost ? 'host_' : 'stu_') + db.user.id + '_' + Math.random().toString(36).slice(2, 7);
+  CALL.isHost = !!asHost;
+  CALL.status = 'requesting_media';
+  CALL.peers = {};
+  CALL.pendingCandidates = {};
+  CALL.pendingSignals = [];
+  CALL.mediaReady = false;
+  CALL.chat = [];
+  CALL.mic = true;
+  CALL.cam = true;
+  CALL.hand = false;
+  CALL.sharing = false;
+  CALL.facingMode = 'user';
+  CALL.t0 = Date.now();
+
+  renderMeetingTab(document.getElementById('appContent'));
   toast(asHost ? 'Starting session & opening cloud room…' : 'Connecting to live class…');
 
-  const title = asHost
-    ? (meetingRecord ? meetingRecord.title : 'Live Classroom')
-    : (meetingRecord ? meetingRecord.title : 'Live Classroom');
-
-  Object.assign(CALL, {
-    room: code,
-    roomTitle: title,
-    courseCode: meetingRecord ? meetingRecord.courseCode : '',
-    me: (asHost ? 'host_' : 'stu_') + db.user.id + '_' + Math.random().toString(36).slice(2, 7),
-    isHost: !!asHost,
-    peers: {},
-    chat: [],
-    mic: true,
-    cam: true,
-    hand: false,
-    sharing: false,
-    facingMode: 'user',
-    status: 'starting',
-    stream: null
-  });
-
-  const abort = msg => {
-    endCall();
-    toast(msg);
-  };
-
-  // Request camera & microphone
+  // 3. Request Mobile-Optimized Camera & Microphone
   try {
     CALL.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: CALL.facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: { echoCancellation: true, noiseSuppression: true }
+      video: { facingMode: { ideal: CALL.facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
+    CALL.cam = true;
+    CALL.mic = true;
   } catch (err) {
-    console.warn('Video+Audio getUserMedia failed:', err);
+    console.warn('Video+Audio getUserMedia failed, attempting audio-only:', err);
     try {
-      CALL.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      CALL.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true }
+      });
       CALL.cam = false;
-      toast('Camera unavailable: joined with audio only');
+      CALL.mic = true;
+      toast('Camera unavailable: joined with microphone only.');
     } catch (err2) {
-      console.error('Audio getUserMedia failed:', err2);
-      return abort('Allow camera & microphone access in your browser settings to join the call.');
+      console.error('Audio-only getUserMedia also failed:', err2);
+      CALL.room = null;
+      showMediaPermissionError(err2);
+      return;
     }
   }
 
   localStream = CALL.stream;
-  CALL.t0 = Date.now();
+  CALL.mediaReady = true;
+
+  // 4. Start Call Timer
   CALL.timer = setInterval(() => {
     const el = document.getElementById('callTimer');
     if (el) {
@@ -2824,7 +3036,7 @@ async function startCall(codeIn, asHost) {
     }
   }, 1000);
 
-  // Setup Firestore signaling
+  // 5. Connect to Firestore Signaling & Presence
   if (window.lhSignaling) {
     if (asHost) {
       await window.lhSignaling.initCallRoom(code, {
@@ -2832,14 +3044,36 @@ async function startCall(codeIn, asHost) {
         hostName: db.user.name,
         title: CALL.roomTitle,
         courseCode: CALL.courseCode,
-        active: true
+        active: true,
+        startedAt: Date.now()
       });
     }
 
-    // Subscribe to incoming signals
-    CALL.unsubSignals = window.lhSignaling.listenCallSignals(code, CALL.me, onIncomingSignal);
+    // Register participant in room
+    await window.lhSignaling.registerParticipant(code, {
+      id: CALL.me,
+      name: db.user.name,
+      role: asHost ? 'host' : 'student',
+      joinedAt: Date.now(),
+      status: 'active',
+      cam: CALL.cam,
+      mic: CALL.mic
+    });
 
-    // If student, announce arrival to host
+    // Listen for room session changes (e.g. Host ending call)
+    CALL.unsubRoom = window.lhSignaling.listenCallRoom(code, (roomData) => {
+      if (!asHost && roomData && roomData.active === false) {
+        CALL.status = 'ended';
+        drawStatusBadge();
+        toast('The lecturer has ended this live session.');
+        setTimeout(() => leaveVideoCall(), 2500);
+      }
+    });
+
+    // Subscribe to fresh incoming WebRTC signals
+    CALL.unsubSignals = window.lhSignaling.listenCallSignals(code, CALL.me, asHost, CALL.t0, onIncomingSignal);
+
+    // Announce presence
     if (!asHost) {
       window.lhSignaling.sendCallSignal(code, {
         from: CALL.me,
@@ -2849,50 +3083,183 @@ async function startCall(codeIn, asHost) {
         payload: {},
         timestamp: Date.now()
       });
+    } else {
+      window.lhSignaling.sendCallSignal(code, {
+        from: CALL.me,
+        fromName: db.user.name,
+        to: 'all',
+        type: 'host_ready',
+        payload: {},
+        timestamp: Date.now()
+      });
     }
-  } else {
-    console.warn('[LectureHub] Firestore signaling initializing, fallback to broadcast');
   }
 
-  renderMeetingTab(document.getElementById('appContent'));
+  // 6. Flush any signals that arrived during permission prompt
+  await flushPendingSignals();
+
+  drawTiles();
+  drawControls();
+  drawStatusBadge();
 }
 
-function joinByCode() {
-  const el = document.getElementById('joinCode');
-  startCall(el ? el.value : '', false);
+// In-place DOM synchronization for video streams: NEVER destroy video elements on re-render!
+function syncLocalVideoElement() {
+  const grid = document.getElementById('callGrid');
+  if (!grid) return;
+
+  let localTile = document.getElementById('tile_me');
+  if (!localTile) {
+    localTile = document.createElement('div');
+    localTile.id = 'tile_me';
+    localTile.className = 'video-box';
+    localTile.style.cssText = 'position:relative;background:#111827;border-radius:14px;border:1px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;';
+    localTile.innerHTML = `
+      <video id="video_me" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;${!CALL.sharing ? 'transform:scaleX(-1);' : ''}"></video>
+      <div id="cam_off_me" class="cam-off" style="position:absolute;inset:0;background:#111827;display:${CALL.cam ? 'none' : 'grid'};place-items:center;">
+        <div style="text-align:center;">
+          <div style="width:64px;height:64px;border-radius:50%;background:#1e3a8a;color:#93c5fd;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 8px;">
+            ${esc(String(db.user.name || '?').slice(0, 2).toUpperCase())}
+          </div>
+          <span style="font-size:12px;color:#94a3b8;">Camera turned off</span>
+        </div>
+      </div>
+      <span class="peer-state-badge" style="position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;background:#059669;color:#fff;">
+        Local (You)
+      </span>
+      <span id="label_me" style="position:absolute;bottom:10px;left:10px;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);padding:4px 10px;border-radius:8px;font-size:11.5px;color:#fff;display:flex;align-items:center;gap:6px;">
+        ${CALL.hand ? '✋ ' : ''}${esc(db.user.name)} (You)
+        ${CALL.mic ? '' : '<span style="color:#ef4444;">🔇</span>'}
+      </span>
+    `;
+    grid.prepend(localTile);
+  }
+
+  const v = document.getElementById('video_me');
+  if (v) {
+    const desiredStream = CALL.sharing ? CALL.screen : CALL.stream;
+    if (v.srcObject !== desiredStream) {
+      v.srcObject = desiredStream;
+    }
+  }
+
+  const camOff = document.getElementById('cam_off_me');
+  if (camOff) camOff.style.display = (CALL.cam || CALL.sharing) ? 'none' : 'grid';
+
+  const lbl = document.getElementById('label_me');
+  if (lbl) {
+    lbl.innerHTML = `${CALL.hand ? '✋ ' : ''}${esc(db.user.name)} (You) ${CALL.mic ? '' : '<span style="color:#ef4444;">🔇</span>'}`;
+  }
 }
 
-function endCall() {
-  if (!CALL.room && !CALL.stream) return;
+function syncPeerVideoElement(peerId, stream) {
+  const grid = document.getElementById('callGrid');
+  if (!grid) return;
 
-  if (window.lhSignaling && CALL.room) {
-    window.lhSignaling.leaveCallRoom(CALL.room, CALL.me, CALL.isHost);
+  const peer = CALL.peers[peerId];
+  if (!peer) return;
+
+  let peerTile = document.getElementById(`tile_${peerId}`);
+  if (!peerTile) {
+    peerTile = document.createElement('div');
+    peerTile.id = `tile_${peerId}`;
+    peerTile.className = 'video-box';
+    peerTile.style.cssText = 'position:relative;background:#111827;border-radius:14px;border:1px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;';
+    const ini = String(peer.name || '?').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
+
+    peerTile.innerHTML = `
+      <video id="video_${peerId}" autoplay playsinline style="width:100%;height:100%;object-fit:cover;"></video>
+      <div id="cam_off_${peerId}" class="cam-off" style="position:absolute;inset:0;background:#111827;display:${peer.connectionState === 'connected' && peer.cam ? 'none' : 'grid'};place-items:center;">
+        <div style="text-align:center;">
+          <div style="width:64px;height:64px;border-radius:50%;background:#1e3a8a;color:#93c5fd;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 8px;">${esc(ini)}</div>
+          <span id="cam_status_${peerId}" style="font-size:12px;color:#94a3b8;">${peer.connectionState === 'connected' ? 'Camera turned off' : 'Connecting stream…'}</span>
+        </div>
+      </div>
+      <span id="badge_${peerId}" class="peer-state-badge" style="position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;background:#d97706;color:#fff;">
+        Connecting…
+      </span>
+      <span id="label_${peerId}" style="position:absolute;bottom:10px;left:10px;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);padding:4px 10px;border-radius:8px;font-size:11.5px;color:#fff;display:flex;align-items:center;gap:6px;">
+        ${esc(peer.name)}
+      </span>
+    `;
+    grid.appendChild(peerTile);
   }
 
-  if (CALL.unsubSignals) {
-    try { CALL.unsubSignals(); } catch (e) {}
-    CALL.unsubSignals = null;
+  const v = document.getElementById(`video_${peerId}`);
+  if (v && stream && v.srcObject !== stream) {
+    v.srcObject = stream;
+    playRemoteAudio();
   }
 
-  Object.keys(CALL.peers).forEach(dropPeer);
+  updatePeerTileUI(peerId);
+  updateCallParticipantCount();
+}
 
-  if (CALL.stream) {
-    CALL.stream.getTracks().forEach(t => t.stop());
-  }
-  if (CALL.screen) {
-    CALL.screen.getTracks().forEach(t => t.stop());
+function updatePeerTileUI(peerId) {
+  const peer = CALL.peers[peerId];
+  if (!peer) return;
+
+  const isLive = peer.connectionState === 'connected';
+  const badge = document.getElementById(`badge_${peerId}`);
+  if (badge) {
+    if (isLive) {
+      badge.textContent = '● Live';
+      badge.style.background = '#059669';
+    } else if (peer.connectionState === 'failed') {
+      badge.textContent = 'Connection Failed';
+      badge.style.background = '#dc2626';
+    } else {
+      badge.textContent = 'Connecting…';
+      badge.style.background = '#d97706';
+    }
   }
 
-  clearInterval(CALL.timer);
-  Object.assign(CALL, {
-    room: null,
-    stream: null,
-    screen: null,
-    sharing: false,
-    status: 'idle',
-    peers: {}
+  const camOff = document.getElementById(`cam_off_${peerId}`);
+  if (camOff) {
+    camOff.style.display = (isLive && peer.cam) ? 'none' : 'grid';
+  }
+
+  const camStatus = document.getElementById(`cam_status_${peerId}`);
+  if (camStatus) {
+    camStatus.textContent = isLive ? 'Camera turned off' : 'Connecting stream…';
+  }
+
+  const lbl = document.getElementById(`label_${peerId}`);
+  if (lbl) {
+    lbl.innerHTML = `${peer.hand ? '✋ ' : ''}${esc(peer.name)} ${peer.mic ? '' : '<span style="color:#ef4444;">🔇</span>'}`;
+  }
+}
+
+function drawTiles() {
+  const grid = document.getElementById('callGrid');
+  if (!grid || !CALL.room) return;
+
+  syncLocalVideoElement();
+  Object.keys(CALL.peers).forEach(id => {
+    syncPeerVideoElement(id, CALL.peers[id].stream);
   });
-  localStream = null;
+
+  // If host and no students have connected yet, show an inviting waiting banner
+  let emptyBanner = document.getElementById('waitingStudentBanner');
+  if (CALL.isHost && Object.keys(CALL.peers).length === 0) {
+    if (!emptyBanner) {
+      emptyBanner = document.createElement('div');
+      emptyBanner.id = 'waitingStudentBanner';
+      emptyBanner.style.cssText = 'position:relative;background:#0f172a;border:2px dashed #1e3a8a;border-radius:14px;min-height:220px;height:100%;display:grid;place-items:center;text-align:center;padding:20px;';
+      emptyBanner.innerHTML = `
+        <div>
+          <div style="width:52px;height:52px;border-radius:14px;background:#1e293b;color:#60a5fa;display:grid;place-items:center;font-size:24px;margin:0 auto 10px;">👥</div>
+          <strong style="color:#fff;font-size:15px;display:block;">Waiting for students to join</strong>
+          <small style="color:#94a3b8;font-size:12px;display:block;margin-top:4px;">Share access code <b>${esc(showCode(CALL.room))}</b> with your class.</small>
+        </div>
+      `;
+      grid.appendChild(emptyBanner);
+    }
+  } else if (emptyBanner) {
+    emptyBanner.remove();
+  }
+
+  updateCallParticipantCount();
 }
 
 function toggleAudio() {
@@ -2901,7 +3268,17 @@ function toggleAudio() {
   t.enabled = !t.enabled;
   CALL.mic = t.enabled;
   sendAllData({ t: 'state', mic: CALL.mic, cam: CALL.cam, hand: CALL.hand });
-  drawTiles();
+  if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.sendCallSignal(CALL.room, {
+      from: CALL.me,
+      fromName: db.user.name,
+      to: 'all',
+      type: 'state',
+      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand },
+      timestamp: Date.now()
+    });
+  }
+  syncLocalVideoElement();
   drawControls();
 }
 
@@ -2914,7 +3291,17 @@ function toggleVideo() {
   t.enabled = !t.enabled;
   CALL.cam = t.enabled;
   sendAllData({ t: 'state', mic: CALL.mic, cam: CALL.cam, hand: CALL.hand });
-  drawTiles();
+  if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.sendCallSignal(CALL.room, {
+      from: CALL.me,
+      fromName: db.user.name,
+      to: 'all',
+      type: 'state',
+      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand },
+      timestamp: Date.now()
+    });
+  }
+  syncLocalVideoElement();
   drawControls();
 }
 
@@ -2939,25 +3326,36 @@ async function switchCamera() {
     CALL.stream.removeTrack(currentVideo);
     CALL.stream.addTrack(newTrack);
 
-    // Replace on all active peer connections
+    // Replace track in-flight across all active WebRTC peer connections
     Object.values(CALL.peers).forEach(p => {
       const sender = p.pc.getSenders().find(s => s.track && s.track.kind === 'video');
       if (sender) sender.replaceTrack(newTrack);
     });
 
-    drawTiles();
+    syncLocalVideoElement();
     toast(`Switched to ${CALL.facingMode === 'environment' ? 'rear' : 'front'} camera`);
   } catch (err) {
-    console.warn('Camera flip error:', err);
-    toast('Could not switch camera. Device may only have one camera.');
+    console.warn('Camera switch error:', err);
+    toast('Could not switch camera.');
   }
 }
 
 function toggleHand() {
   CALL.hand = !CALL.hand;
   sendAllData({ t: 'state', mic: CALL.mic, cam: CALL.cam, hand: CALL.hand });
-  drawTiles();
+  if (window.lhSignaling && CALL.room) {
+    window.lhSignaling.sendCallSignal(CALL.room, {
+      from: CALL.me,
+      fromName: db.user.name,
+      to: 'all',
+      type: 'state',
+      payload: { mic: CALL.mic, cam: CALL.cam, hand: CALL.hand },
+      timestamp: Date.now()
+    });
+  }
+  syncLocalVideoElement();
   drawControls();
+  if (CALL.hand) toast('Hand raised ✋');
 }
 
 async function toggleShare() {
@@ -2967,15 +3365,16 @@ async function toggleShare() {
   } catch (e) {
     return;
   }
-
   const tr = CALL.screen.getVideoTracks()[0];
+  tr.onended = stopShare;
+  CALL.sharing = true;
+
   Object.values(CALL.peers).forEach(p => {
     const s = p.pc.getSenders().find(x => x.track && x.track.kind === 'video');
     if (s && tr) s.replaceTrack(tr);
   });
-  tr.onended = stopShare;
-  CALL.sharing = true;
-  drawTiles();
+
+  syncLocalVideoElement();
   drawControls();
 }
 
@@ -2993,7 +3392,7 @@ function stopShare() {
     });
   }
   CALL.sharing = false;
-  drawTiles();
+  syncLocalVideoElement();
   drawControls();
 }
 
@@ -3027,77 +3426,6 @@ function drawChat() {
     </div>
   `).join('') || '<small style="color:#94a3b8;font-size:11px;">No messages yet. Send a message to the class.</small>';
   l.scrollTop = l.scrollHeight;
-}
-
-function tileHTML(id, name, mic, cam, hand, me, connectionState) {
-  const ini = String(name || '?').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
-  const isConnected = me || connectionState === 'connected';
-
-  return `
-    <div class="video-box" id="tile_${id}" style="position:relative;background:#111827;border-radius:14px;border:1px solid #1f2937;min-height:220px;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;">
-      <video id="video_${id}" autoplay playsinline ${me ? 'muted' : ''} style="width:100%;height:100%;object-fit:cover;${me && !CALL.sharing ? 'transform:scaleX(-1);' : ''}"></video>
-      
-      <!-- Fallback Avatar when Camera is Off or Connecting -->
-      <div class="cam-off" style="position:absolute;inset:0;background:#111827;display:${cam && isConnected ? 'none' : 'grid'};place-items:center;">
-        <div style="text-align:center;">
-          <div style="width:64px;height:64px;border-radius:50%;background:#1e3a8a;color:#93c5fd;display:grid;place-items:center;font-size:24px;font-weight:800;margin:0 auto 8px;">${esc(ini)}</div>
-          <span style="font-size:12px;color:#94a3b8;">${!isConnected ? 'Connecting stream…' : 'Camera turned off'}</span>
-        </div>
-      </div>
-
-      <!-- State badge -->
-      <span class="peer-state-badge" style="position:absolute;top:10px;right:10px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;background:${isConnected ? '#059669' : '#d97706'};color:#fff;">
-        ${me ? 'Local' : (connectionState === 'connected' ? '● Live' : 'Connecting…')}
-      </span>
-
-      <!-- Label and indicators -->
-      <span style="position:absolute;bottom:10px;left:10px;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);padding:4px 10px;border-radius:8px;font-size:11.5px;color:#fff;display:flex;align-items:center;gap:6px;">
-        ${hand ? '✋ ' : ''}${esc(name)}${me ? ' (You)' : ''}
-        ${mic ? '' : '<span style="color:#ef4444;">🔇</span>'}
-      </span>
-    </div>
-  `;
-}
-
-function drawTiles() {
-  const g = document.getElementById('callGrid');
-  if (!g || !CALL.room) return;
-  const ids = Object.keys(CALL.peers);
-
-  // If no peers yet and host, show friendly waiting tile
-  let peersHTML = ids.map(i => {
-    const p = CALL.peers[i];
-    return tileHTML(i, p.name, p.mic, p.cam, p.hand, false, p.connectionState);
-  }).join('');
-
-  if (ids.length === 0 && CALL.isHost) {
-    peersHTML = `
-      <div class="video-box" style="position:relative;background:#0f172a;border:2px dashed #1e3a8a;border-radius:14px;min-height:220px;height:100%;display:grid;place-items:center;text-align:center;padding:20px;">
-        <div>
-          <div style="width:52px;height:52px;border-radius:14px;background:#1e293b;color:#60a5fa;display:grid;place-items:center;font-size:24px;margin:0 auto 10px;">👥</div>
-          <strong style="color:#fff;font-size:15px;display:block;">Waiting for students to join</strong>
-          <small style="color:#94a3b8;font-size:12px;display:block;margin-top:4px;">Share access code <b>${esc(showCode(CALL.room))}</b> with your class.</small>
-        </div>
-      </div>
-    `;
-  }
-
-  g.innerHTML = tileHTML('me', db.user.name, CALL.mic, CALL.cam || CALL.sharing, CALL.hand, true, 'connected') + peersHTML;
-
-  const meVideo = document.getElementById('video_me');
-  if (meVideo) {
-    meVideo.srcObject = CALL.sharing ? CALL.screen : CALL.stream;
-  }
-
-  ids.forEach(i => {
-    const v = document.getElementById('video_' + i);
-    if (v && CALL.peers[i]?.stream) {
-      v.srcObject = CALL.peers[i].stream;
-    }
-  });
-
-  const countEl = document.getElementById('callCount');
-  if (countEl) countEl.textContent = ids.length + 1;
 }
 
 function drawControls() {
@@ -3214,7 +3542,7 @@ function renderMeetingTab(c) {
           </button>
           
           <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:12px;margin-top:16px;font-size:12px;color:#1e40af;line-height:1.45;">
-            <b>Camera & Mic Note:</b> Your browser will ask for camera and microphone permission. Tap "Allow" when prompted. If your lecturer hasn't started the session yet, wait a moment and try again.
+            <b>Camera & Mic Note:</b> Your browser will ask for camera and microphone permission. Tap "Allow" when prompted. If your lecturer hasn't started the session yet, the screen will inform you and auto-admit you once they begin.
           </div>
         </div>
       `;
@@ -3657,9 +3985,10 @@ const _st=window.switchTab;window.switchTab=function(t,b){window.mDetail=null;re
 
 <!-- LectureHub Universal Real-Time Multi-Device Firebase Synchronization Module -->
 <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { 
   getFirestore, 
+  initializeFirestore,
   doc, 
   collection, 
   setDoc, 
@@ -3680,8 +4009,15 @@ const firebaseConfig = {
   messagingSenderId: "748023805602"
 };
 
-const app = initializeApp(firebaseConfig);
-const dbFirestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+let dbFirestore;
+try {
+  dbFirestore = initializeFirestore(app, {
+    experimentalForceLongPolling: true
+  }, firebaseConfig.firestoreDatabaseId);
+} catch (e) {
+  dbFirestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
 window.dbFirestore = dbFirestore;
 
 function setCloudIndicator(synced, message) {

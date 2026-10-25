@@ -1,7 +1,8 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { 
   getFirestore, 
+  initializeFirestore,
   collection, 
   doc, 
   setDoc, 
@@ -9,8 +10,12 @@ import {
   getDocs, 
   getDocFromServer,
   onSnapshot,
-  addDoc 
+  addDoc,
+  deleteDoc,
+  query,
+  where
 } from 'firebase/firestore';
+
 export const firebaseConfig = {
   projectId: "trusty-gearbox-h8f9p",
   appId: "1:748023805602:web:7aa99fe1ae8e3c7b7689fb",
@@ -22,8 +27,8 @@ export const firebaseConfig = {
   measurementId: ""
 };
 
-// Initialize Firebase App
-export const firebaseApp = initializeApp({
+// Initialize or reuse Firebase App
+export const firebaseApp = getApps().length > 0 ? getApp() : initializeApp({
   apiKey: firebaseConfig.apiKey,
   authDomain: firebaseConfig.authDomain,
   projectId: firebaseConfig.projectId,
@@ -33,12 +38,69 @@ export const firebaseApp = initializeApp({
   measurementId: firebaseConfig.measurementId,
 });
 
-// Initialize Firestore with specific database ID
-export const firestoreDb = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
-  ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId)
-  : getFirestore(firebaseApp);
+const targetDbId = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
+  ? firebaseConfig.firestoreDatabaseId
+  : undefined;
 
+// Initialize Firestore with experimentalForceLongPolling to guarantee proxy, iframe, and mobile network reachability
+let firestoreInstance;
+try {
+  firestoreInstance = initializeFirestore(firebaseApp, {
+    experimentalForceLongPolling: true,
+  }, targetDbId);
+} catch {
+  firestoreInstance = targetDbId ? getFirestore(firebaseApp, targetDbId) : getFirestore(firebaseApp);
+}
+
+export const firestoreDb = firestoreInstance;
 export const firebaseAuth = getAuth(firebaseApp);
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: firebaseAuth.currentUser?.uid,
+      email: firebaseAuth.currentUser?.email,
+      emailVerified: firebaseAuth.currentUser?.emailVerified,
+      isAnonymous: firebaseAuth.currentUser?.isAnonymous,
+      tenantId: firebaseAuth.currentUser?.tenantId,
+      providerInfo: firebaseAuth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export let isFirebaseOnline = false;
 
@@ -55,7 +117,7 @@ export async function testConnection(): Promise<boolean> {
     return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('[LectureHub Firebase] The client is offline. Operating with local cache.');
+      console.warn('[LectureHub Firebase] The client is operating in offline mode.');
     } else {
       console.log('[LectureHub Firebase] Firestore connected (ready for documents).');
       isFirebaseOnline = true;
@@ -158,6 +220,16 @@ export interface CallSignal {
   timestamp: number;
 }
 
+export interface CallParticipant {
+  id: string;
+  name: string;
+  role: 'host' | 'student';
+  joinedAt: number;
+  status: 'active' | 'left';
+  cam?: boolean;
+  mic?: boolean;
+}
+
 export async function initCallRoom(roomCode: string, roomData: Record<string, any>) {
   if (!firestoreDb) return;
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -177,25 +249,82 @@ export async function getCallRoom(roomCode: string) {
   return snap.exists() ? snap.data() : null;
 }
 
+export function listenCallRoom(roomCode: string, onUpdate: (roomData: any) => void) {
+  if (!firestoreDb) return () => {};
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const roomRef = doc(firestoreDb, 'calls', cleanCode);
+  return onSnapshot(roomRef, (snap) => {
+    if (snap.exists()) {
+      onUpdate(snap.data());
+    } else {
+      onUpdate(null);
+    }
+  }, (err) => {
+    console.warn(`[LectureHub] Room listen error on ${cleanCode}:`, err);
+  });
+}
+
+export async function registerParticipant(roomCode: string, participant: CallParticipant) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const partRef = doc(firestoreDb, 'calls', cleanCode, 'participants', participant.id);
+  await setDoc(partRef, {
+    ...participant,
+    updatedAt: Date.now()
+  }, { merge: true });
+}
+
+export async function removeParticipant(roomCode: string, participantId: string) {
+  if (!firestoreDb) return;
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const partRef = doc(firestoreDb, 'calls', cleanCode, 'participants', participantId);
+  try {
+    await deleteDoc(partRef);
+  } catch (e) {
+    console.warn('[LectureHub] removeParticipant error:', e);
+  }
+}
+
+export function listenParticipants(roomCode: string, onUpdate: (participants: CallParticipant[]) => void) {
+  if (!firestoreDb) return () => {};
+  const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const partCol = collection(firestoreDb, 'calls', cleanCode, 'participants');
+  return onSnapshot(partCol, (snapshot) => {
+    const list: CallParticipant[] = [];
+    snapshot.forEach(d => {
+      const p = d.data() as CallParticipant;
+      if (p.status !== 'left') {
+        list.push(p);
+      }
+    });
+    onUpdate(list);
+  }, (err) => {
+    console.warn(`[LectureHub] Participant listen error on ${cleanCode}:`, err);
+  });
+}
+
 export async function sendCallSignal(roomCode: string, signal: CallSignal) {
   if (!firestoreDb) return;
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const signalsRef = collection(firestoreDb, 'calls', cleanCode, 'signals');
   await addDoc(signalsRef, {
     ...signal,
-    timestamp: Date.now()
+    timestamp: signal.timestamp || Date.now()
   });
 }
 
 export function listenCallSignals(
   roomCode: string, 
   myPeerId: string, 
+  isHost: boolean,
+  sinceTimestamp: number,
   onSignal: (signal: CallSignal, signalId: string) => void
 ) {
   if (!firestoreDb) return () => {};
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const signalsRef = collection(firestoreDb, 'calls', cleanCode, 'signals');
   const seenSignalIds = new Set<string>();
+  const threshold = sinceTimestamp ? sinceTimestamp - 5000 : Date.now() - 30000;
 
   const unsub = onSnapshot(signalsRef, (snapshot) => {
     snapshot.docChanges().forEach((change) => {
@@ -204,12 +333,21 @@ export function listenCallSignals(
         if (seenSignalIds.has(id)) return;
         seenSignalIds.add(id);
         const data = change.doc.data() as CallSignal;
+
+        // Discard signals older than call session threshold
+        if (data.timestamp && data.timestamp < threshold) return;
+
         // Ignore signals sent by myself
         if (data.from === myPeerId) return;
-        // Ignore signals specifically addressed to another peer
-        if (data.to && data.to !== myPeerId && data.to !== 'all' && data.to !== 'host') {
-          return;
-        }
+
+        // Target matching:
+        // Must match either:
+        // 1. my specific peer ID
+        // 2. 'all'
+        // 3. 'host' ONLY IF I am the host
+        const isForMe = data.to === myPeerId || data.to === 'all' || (isHost && data.to === 'host');
+        if (!isForMe) return;
+
         onSignal(data, id);
       }
     });
@@ -224,6 +362,7 @@ export async function leaveCallRoom(roomCode: string, myPeerId: string, isHost: 
   if (!firestoreDb) return;
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   try {
+    await removeParticipant(cleanCode, myPeerId);
     await sendCallSignal(cleanCode, {
       from: myPeerId,
       fromName: 'Leaving',
@@ -248,8 +387,13 @@ if (typeof window !== 'undefined') {
   (window as any).lhSignaling = {
     initCallRoom,
     getCallRoom,
+    listenCallRoom,
+    registerParticipant,
+    removeParticipant,
+    listenParticipants,
     sendCallSignal,
     listenCallSignals,
     leaveCallRoom
   };
 }
+
