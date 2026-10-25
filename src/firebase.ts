@@ -243,33 +243,55 @@ export interface CallMessage {
 }
 
 export async function initCallRoom(roomCode: string, roomData: Record<string, any>) {
-  if (!firestoreDb) return;
+  if (!firestoreDb) {
+    throw new Error('Firestore database is not initialized. Please check network connection.');
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const roomRef = doc(firestoreDb, 'calls', cleanCode);
-  await setDoc(roomRef, {
-    ...roomData,
-    code: cleanCode,
-    active: true,
-    chatEnabled: roomData.chatEnabled !== false,
-    updatedAt: Date.now()
-  }, { merge: true });
+  try {
+    await setDoc(roomRef, {
+      ...roomData,
+      code: cleanCode,
+      active: true,
+      chatEnabled: roomData.chatEnabled !== false,
+      updatedAt: Date.now()
+    }, { merge: true });
+    console.log(`[Firebase Call Room] initCallRoom succeeded for room ${cleanCode}`);
+  } catch (err: any) {
+    console.error(`[Firebase Call Room] initCallRoom failed for room ${cleanCode}:`, err);
+    throw new Error(`Failed to initialize classroom on cloud: ${err?.message || 'Network error'}`);
+  }
 }
 
 export async function updateCallRoom(roomCode: string, updates: Record<string, any>) {
-  if (!firestoreDb) return;
+  if (!firestoreDb) {
+    throw new Error('Firestore database is not initialized.');
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const roomRef = doc(firestoreDb, 'calls', cleanCode);
-  await setDoc(roomRef, {
-    ...updates,
-    updatedAt: Date.now()
-  }, { merge: true });
+  try {
+    await setDoc(roomRef, {
+      ...updates,
+      updatedAt: Date.now()
+    }, { merge: true });
+  } catch (err: any) {
+    console.warn(`[Firebase Call Room] updateCallRoom error on ${cleanCode}:`, err);
+    throw err;
+  }
 }
 
 export async function getCallRoom(roomCode: string) {
-  if (!firestoreDb) return null;
+  if (!firestoreDb) {
+    throw new Error('Firestore database is not initialized. Please verify your connection.');
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const snap = await getDoc(doc(firestoreDb, 'calls', cleanCode));
-  return snap.exists() ? snap.data() : null;
+  try {
+    const snap = await getDoc(doc(firestoreDb, 'calls', cleanCode));
+    return snap.exists() ? snap.data() : null;
+  } catch (err: any) {
+    console.error(`[Firebase Call Room] getCallRoom lookup failed for room ${cleanCode}:`, err);
+    throw new Error(`Failed to lookup classroom session: ${err?.message || 'Network error'}`);
+  }
 }
 
 export function listenCallRoom(
@@ -277,7 +299,10 @@ export function listenCallRoom(
   onUpdate: (roomData: any) => void,
   onError?: (err: any) => void
 ) {
-  if (!firestoreDb) return () => {};
+  if (!firestoreDb) {
+    if (onError) onError(new Error('Firestore database is not initialized.'));
+    return () => {};
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const roomRef = doc(firestoreDb, 'calls', cleanCode);
   return onSnapshot(roomRef, (snap) => {
@@ -293,13 +318,21 @@ export function listenCallRoom(
 }
 
 export async function registerParticipant(roomCode: string, participant: CallParticipant) {
-  if (!firestoreDb) return;
+  if (!firestoreDb) {
+    throw new Error('Firestore database is not initialized. Please check your connection.');
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const partRef = doc(firestoreDb, 'calls', cleanCode, 'participants', participant.id);
-  await setDoc(partRef, {
-    ...participant,
-    updatedAt: Date.now()
-  }, { merge: true });
+  try {
+    await setDoc(partRef, {
+      ...participant,
+      updatedAt: Date.now()
+    }, { merge: true });
+    console.log(`[Firebase Call Room] registerParticipant succeeded for ${participant.id} in room ${cleanCode}`);
+  } catch (err: any) {
+    console.error(`[Firebase Call Room] registerParticipant failed for room ${cleanCode}:`, err);
+    throw new Error(`Failed to register in live class: ${err?.message || 'Network error'}`);
+  }
 }
 
 export async function updateParticipantState(roomCode: string, participantId: string, updates: Partial<CallParticipant>) {
@@ -332,7 +365,10 @@ export function listenParticipants(
   onUpdate: (participants: CallParticipant[]) => void,
   onError?: (err: any) => void
 ) {
-  if (!firestoreDb) return () => {};
+  if (!firestoreDb) {
+    if (onError) onError(new Error('Firestore database is not initialized.'));
+    return () => {};
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const partCol = collection(firestoreDb, 'calls', cleanCode, 'participants');
   return onSnapshot(partCol, (snapshot) => {
@@ -358,13 +394,20 @@ export function listenParticipants(
 }
 
 export async function sendCallSignal(roomCode: string, signal: CallSignal) {
-  if (!firestoreDb) return;
+  if (!firestoreDb) {
+    console.warn('[Firebase Signaling] firestoreDb not ready, dropping signal');
+    return;
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const signalsRef = collection(firestoreDb, 'calls', cleanCode, 'signals');
-  await addDoc(signalsRef, {
-    ...signal,
-    timestamp: signal.timestamp || Date.now()
-  });
+  try {
+    await addDoc(signalsRef, {
+      ...signal,
+      timestamp: signal.timestamp || Date.now()
+    });
+  } catch (err) {
+    console.warn(`[Firebase Signaling] Failed to send signal to ${cleanCode}:`, err);
+  }
 }
 
 export function listenCallSignals(
@@ -375,7 +418,10 @@ export function listenCallSignals(
   onSignal: (signal: CallSignal, signalId: string) => void,
   onError?: (err: any) => void
 ) {
-  if (!firestoreDb) return () => {};
+  if (!firestoreDb) {
+    if (onError) onError(new Error('Firestore database is not initialized.'));
+    return () => {};
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const signalsRef = collection(firestoreDb, 'calls', cleanCode, 'signals');
   const seenSignalIds = new Set<string>();
@@ -415,13 +461,20 @@ export function listenCallSignals(
 }
 
 export async function sendCallMessage(roomCode: string, message: CallMessage) {
-  if (!firestoreDb) return;
+  if (!firestoreDb) {
+    throw new Error('Firestore database is not initialized. Cannot send message.');
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const msgCol = collection(firestoreDb, 'calls', cleanCode, 'messages');
-  await addDoc(msgCol, {
-    ...message,
-    timestamp: message.timestamp || Date.now()
-  });
+  try {
+    await addDoc(msgCol, {
+      ...message,
+      timestamp: message.timestamp || Date.now()
+    });
+  } catch (err: any) {
+    console.error(`[Firebase Call Room] Failed to send message in ${cleanCode}:`, err);
+    throw new Error(`Failed to send message: ${err?.message || 'Network error'}`);
+  }
 }
 
 export function listenCallMessages(
@@ -429,7 +482,10 @@ export function listenCallMessages(
   onMessage: (message: CallMessage, messageId: string) => void,
   onError?: (err: any) => void
 ) {
-  if (!firestoreDb) return () => {};
+  if (!firestoreDb) {
+    if (onError) onError(new Error('Firestore database is not initialized.'));
+    return () => {};
+  }
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const msgCol = collection(firestoreDb, 'calls', cleanCode, 'messages');
   const seenMessageIds = new Set<string>();
@@ -451,6 +507,7 @@ export function listenCallMessages(
 
   return unsub;
 }
+
 
 export async function leaveCallRoom(roomCode: string, myPeerId: string, isHost: boolean) {
   if (!firestoreDb) return;

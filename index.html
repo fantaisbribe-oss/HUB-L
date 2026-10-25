@@ -2401,11 +2401,13 @@ function playRemoteAudio() {
     document.querySelectorAll('#callGrid video').forEach(v => {
       if (v.id !== 'video_me' && v.srcObject) {
         v.playsInline = true;
+        v.setAttribute('playsinline', '');
+        v.setAttribute('webkit-playsinline', '');
         v.autoplay = true;
         const p = v.play();
         if (p !== undefined) {
           p.catch(err => {
-            console.warn('[Audio Autoplay Blocked]', err);
+            console.warn('[Audio Autoplay Blocked on iPhone/Android]', err);
             const prompt = document.getElementById('audioUnlockPrompt');
             if (prompt) prompt.style.display = 'flex';
           });
@@ -2417,8 +2419,13 @@ function playRemoteAudio() {
 
 function unlockAudioManually() {
   document.querySelectorAll('#callGrid video').forEach(v => {
-    v.muted = false;
-    v.play().catch(e => console.warn(e));
+    if (v.id !== 'video_me') {
+      v.muted = false;
+      v.playsInline = true;
+      v.setAttribute('playsinline', '');
+      v.setAttribute('webkit-playsinline', '');
+      v.play().catch(e => console.warn('[iOS Audio Unlock Error]', e));
+    }
   });
   const prompt = document.getElementById('audioUnlockPrompt');
   if (prompt) prompt.style.display = 'none';
@@ -3001,6 +3008,20 @@ async function flushPendingSignals() {
   }
 }
 
+// Diagnostic Stage Reporting for Live Classroom Startup
+function updateCallStage(stage, detail = '') {
+  CALL.initStage = stage;
+  console.log(`[LectureHub Stage] ${stage}${detail ? ' — ' + detail : ''}`);
+  const statusEl = document.getElementById('callStatusIndicator');
+  if (statusEl) {
+    statusEl.textContent = stage;
+  }
+  const btn = document.getElementById('joinCallBtn');
+  if (btn && CALL.isJoining) {
+    btn.innerHTML = `<span>⏳</span><span>${stage}…</span>`;
+  }
+}
+
 // User-Facing Join-By-Code Action (used by buttons and onkeydown Enter)
 async function joinByCode() {
   const input = document.getElementById('joinCode');
@@ -3016,14 +3037,14 @@ async function joinByCode() {
   const joinBtn = document.getElementById('joinCallBtn');
   if (joinBtn) {
     joinBtn.disabled = true;
-    joinBtn.innerHTML = '<span>⏳</span><span>Joining class…</span>';
+    joinBtn.innerHTML = '<span>⏳</span><span>Checking session…</span>';
   }
 
   try {
     await startCall(code, false);
   } finally {
     const btnAfter = document.getElementById('joinCallBtn');
-    if (btnAfter) {
+    if (btnAfter && !CALL.room) {
       btnAfter.disabled = false;
       btnAfter.innerHTML = '<span>📹</span><span>Join Live Video Call</span>';
     }
@@ -3070,11 +3091,8 @@ async function acquireUserMedia(facingMode = 'user') {
   return { stream, camOk, micOk };
 }
 
-// Centralized Call-Initialization Failure & Rollback Handler
-function handleCallInitFailure(code, error, userMessage) {
-  console.error('[Call Init Failure]', code, error);
-
-  // 1. Release all acquired media tracks
+// Clean up resources owned by a failed or abandoned attempt without harming other users
+function cleanupCallAttemptResources() {
   if (CALL.stream) {
     CALL.stream.getTracks().forEach(t => {
       try { t.stop(); } catch (e) {}
@@ -3089,7 +3107,6 @@ function handleCallInitFailure(code, error, userMessage) {
   }
   localStream = null;
 
-  // 2. Stop timers & audio analysers
   if (CALL.timer) {
     clearInterval(CALL.timer);
     CALL.timer = null;
@@ -3099,7 +3116,6 @@ function handleCallInitFailure(code, error, userMessage) {
     CALL.localAudioAnalyserCleanup = null;
   }
 
-  // 3. Close & destroy all peer connections
   Object.values(CALL.peers).forEach(p => {
     if (p.analyserCleanup) {
       try { p.analyserCleanup(); } catch (e) {}
@@ -3110,13 +3126,11 @@ function handleCallInitFailure(code, error, userMessage) {
   });
   CALL.peers = {};
 
-  // 4. Safely unsubscribe from all Firestore listeners
   if (CALL.unsubRoom) { try { CALL.unsubRoom(); } catch (e) {} CALL.unsubRoom = null; }
   if (CALL.unsubParts) { try { CALL.unsubParts(); } catch (e) {} CALL.unsubParts = null; }
   if (CALL.unsubSignals) { try { CALL.unsubSignals(); } catch (e) {} CALL.unsubSignals = null; }
   if (CALL.unsubChat) { try { CALL.unsubChat(); } catch (e) {} CALL.unsubChat = null; }
 
-  // 5. Clear queues and state
   CALL.pendingCandidates = {};
   CALL.pendingSignals = [];
   CALL.room = null;
@@ -3124,8 +3138,15 @@ function handleCallInitFailure(code, error, userMessage) {
   CALL.status = 'idle';
   CALL.statusDetail = '';
   CALL.isJoining = false;
+}
 
-  // 6. Display user-friendly failure card with retry
+// Centralized Call-Initialization Failure & Rollback Handler
+function handleCallInitFailure(code, error, userMessage) {
+  console.error('[Call Init Failure]', code, error);
+
+  cleanupCallAttemptResources();
+
+  // Display user-friendly failure card with retry
   showCallFailureView(code, error, userMessage);
 }
 
@@ -3138,32 +3159,35 @@ function showCallFailureView(code, error, userMessage) {
   const isMissing = error && (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError');
   const isOverconstrained = error && (error.name === 'OverconstrainedError' || error.name === 'ConstraintNotSatisfiedError');
 
-  let title = 'Could Not Join Live Classroom';
+  let title = 'Could Not Connect to Live Classroom';
   let message = userMessage || 'An unexpected connection error occurred.';
 
   if (isDenied) {
     title = 'Camera & Microphone Access Required';
-    message = 'Your browser blocked camera and microphone access. Tap the <b>lock or site settings icon</b> in your browser address bar and set Camera & Microphone to <b>Allow</b>, then tap Retry.';
+    message = 'Camera or microphone access was blocked. On iPhone Safari, tap <b>aA</b> or the <b>lock/settings icon</b> in your address bar > <b>Website Settings</b> > set Camera and Microphone to <b>Allow</b>, then tap Retry.';
   } else if (isBusy) {
     title = 'Camera or Microphone in Use';
-    message = 'Your camera or microphone is currently in use by another application or browser tab. Please close other camera apps and tap Retry.';
+    message = 'Your camera or microphone is in use by another application or browser tab. Please close other camera apps and tap Retry.';
   } else if (isMissing) {
-    title = 'No Media Devices Found';
+    title = 'No Media Devices Detected';
     message = 'No camera or microphone hardware was detected on this device. Please connect a headset or webcam and tap Retry.';
   } else if (isOverconstrained) {
     title = 'Camera Constraints Unsupported';
     message = 'Your camera does not support requested resolution settings. Tap Retry to join with basic constraints.';
   }
 
+  const failedStage = CALL.initStage ? `<small style="display:block;margin-top:8px;color:#94a3b8;font-size:11px;">Failed during: ${esc(CALL.initStage)}</small>` : '';
+
   c.innerHTML = `
     <div class="panel" style="max-width:540px;margin:30px auto;padding:32px 24px;border-radius:20px;text-align:center;">
       <div style="width:68px;height:68px;border-radius:20px;background:#fee2e2;color:#dc2626;display:grid;place-items:center;font-size:32px;margin:0 auto 16px;">⚠️</div>
       <h2 style="font-size:20px;margin-bottom:8px;color:var(--ink);">${esc(title)}</h2>
-      <p style="color:var(--muted);font-size:14px;line-height:1.55;margin-bottom:20px;">
+      <p style="color:var(--muted);font-size:14px;line-height:1.55;margin-bottom:12px;">
         ${message}
       </p>
-      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-        <button class="primary" style="min-height:50px;padding:0 24px;border-radius:14px;font-weight:700;" onclick="startCall('${esc(code || '')}', false)">
+      ${failedStage}
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:20px;">
+        <button class="primary" style="min-height:50px;padding:0 24px;border-radius:14px;font-weight:700;" onclick="startCall('${esc(code || '')}', ${CALL.isHost ? 'true' : 'false'})">
           🔄 Retry Connection
         </button>
         <button class="outline" style="min-height:50px;padding:0 20px;border-radius:14px;" onclick="renderMeetingTab(document.getElementById('appContent'))">
@@ -3200,7 +3224,7 @@ function showWaitingForLecturerView(code, meetingRecord) {
       </div>
 
       <div style="display:flex;gap:10px;justify-content:center;">
-        <button class="primary" style="min-height:48px;border-radius:12px;padding:0 20px;" onclick="startCall('${esc(code)}', false)">
+        <button id="waitingCheckBtn" class="primary" style="min-height:48px;border-radius:12px;padding:0 20px;" onclick="checkWaitingSessionAgain('${esc(code)}')">
           🔄 Check Again Now
         </button>
         <button class="outline" style="min-height:48px;border-radius:12px;padding:0 18px;" onclick="cancelWaitingForLecturer()">
@@ -3220,8 +3244,19 @@ function showWaitingForLecturerView(code, meetingRecord) {
         toast('Lecturer started the session! Connecting now…');
         startCall(code, false);
       }
+    }, (err) => {
+      console.warn('[Waiting Room Listener Warning]', err);
     });
   }
+}
+
+async function checkWaitingSessionAgain(code) {
+  if (CALL.unsubRoom) {
+    try { CALL.unsubRoom(); } catch (e) {}
+    CALL.unsubRoom = null;
+  }
+  CALL.isJoining = false;
+  await startCall(code, false);
 }
 
 function cancelWaitingForLecturer() {
@@ -3241,15 +3276,22 @@ async function startCall(codeIn, asHost) {
     return;
   }
 
-  // 2. Concurrency Lock
+  // 2. Concurrency Lock & Active Call Detection
   if (CALL.isJoining) {
-    console.warn('[startCall] Join already in progress, ignoring duplicate trigger.');
+    console.warn('[startCall] Startup already in progress, ignoring duplicate trigger.');
     return;
   }
-  if (CALL.room) {
-    console.warn('[startCall] Already connected to room:', CALL.room);
+  // If user is ALREADY active in this room with working media
+  if (CALL.room && CALL.mediaReady && (CALL.status === 'connected' || CALL.status === 'connecting' || CALL.status === 'waiting')) {
+    console.warn('[startCall] Already active in classroom session:', CALL.room);
     return;
   }
+  // If CALL.room is lingering from a previous incomplete attempt, reset it first
+  if (CALL.room && !CALL.mediaReady) {
+    console.warn('[startCall] Resetting previous incomplete call attempt for room:', CALL.room);
+    cleanupCallAttemptResources();
+  }
+
   CALL.isJoining = true;
 
   const code = normCode(codeIn);
@@ -3259,66 +3301,84 @@ async function startCall(codeIn, asHost) {
     return;
   }
 
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.RTCPeerConnection) {
-    toast('WebRTC is required. Please ensure you are accessing via HTTPS.');
-    CALL.isJoining = false;
-    return;
-  }
-
   let acquiredStream = null;
 
   try {
-    // 3. Session Validation & Authorization
+    // Stage 1: Checking session & browser capabilities
+    updateCallStage('Checking session', asHost ? 'Verifying lecturer session' : 'Looking up class room');
+
+    // Browser context and WebRTC checks (crucial for iPhone Safari)
+    if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      throw new Error('Live classroom requires a secure HTTPS context on iPhone Safari. Please access via HTTPS.');
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Camera & Microphone API (getUserMedia) is unavailable. In iPhone Settings > Safari > Camera/Microphone, set to Allow.');
+    }
+    if (!window.RTCPeerConnection) {
+      throw new Error('WebRTC (RTCPeerConnection) is not supported in this browser.');
+    }
+
+    // Clean any waiting listener from previous screen
+    if (CALL.unsubRoom) {
+      try { CALL.unsubRoom(); } catch (e) {}
+      CALL.unsubRoom = null;
+    }
+
     const meetingRecord = (db.meetings || []).find(m => normCode(m.accessCode) === code);
     let cloudRoom = null;
+    let cloudLookupError = null;
+
     if (window.lhSignaling) {
       try {
         cloudRoom = await window.lhSignaling.getCallRoom(code);
-      } catch (e) {
-        console.warn('[startCall] getCallRoom error:', e);
+      } catch (lookupErr) {
+        cloudLookupError = lookupErr;
+        console.error('[startCall] Cloud session lookup error:', lookupErr);
       }
+    }
+
+    // Explicitly fail if cloud lookup threw an error — NEVER misinterpret a Firestore failure as an inactive session!
+    if (cloudLookupError) {
+      throw new Error(`Could not reach live classroom server: ${cloudLookupError.message || 'Network connection failed'}`);
     }
 
     const targetCourseCode = (meetingRecord && meetingRecord.courseCode) || (cloudRoom && cloudRoom.courseCode) || '';
     const roomTitle = (meetingRecord && meetingRecord.title) || (cloudRoom && cloudRoom.title) || 'Live Classroom';
 
     if (!asHost) {
+      // Outcome 1: Session does not exist anywhere
       if (!meetingRecord && !cloudRoom) {
-        toast('Session code not found. Please verify the code with your lecturer.');
-        CALL.isJoining = false;
-        return;
+        throw new Error(`Session code "${showCode(code)}" was not found. Please verify the code with your lecturer.`);
       }
 
+      // Course enrollment check
       if (targetCourseCode) {
         const course = courseByCode(targetCourseCode);
         if (course && typeof studentEnrollments === 'function') {
           const isEnrolled = studentEnrollments(db.user.id).some(e => String(e.courseId) === String(course.id));
           if (!isEnrolled) {
-            toast(`Access Restricted: You are not enrolled in ${course.code}. Please register for this course first.`);
-            CALL.isJoining = false;
-            return;
+            throw new Error(`Access Restricted: You are not enrolled in ${course.code} (${course.name}). Please register for this course first.`);
           }
         }
       }
 
-      if (!cloudRoom || !cloudRoom.active) {
+      // Outcome 2: Session exists but is confirmed inactive
+      const isRoomActive = cloudRoom && cloudRoom.active === true;
+      if (!isRoomActive) {
         CALL.isJoining = false;
         showWaitingForLecturerView(code, meetingRecord);
         return;
       }
+      // Outcome 3: Session is active and authorized! Proceed...
     }
 
-    // 4. Clean any existing waiting listener
-    if (CALL.unsubRoom) {
-      try { CALL.unsubRoom(); } catch (e) {}
-      CALL.unsubRoom = null;
-    }
-
-    // 5. Acquire Mobile-Optimized Camera & Microphone
+    // Stage 2: Requesting media
+    updateCallStage('Requesting media', 'Camera and microphone');
     const { stream, camOk, micOk } = await acquireUserMedia(CALL.facingMode);
     acquiredStream = stream;
 
-    // 6. Commit Call State ONLY NOW that media and authorization succeeded
+    // Stage 3: Initializing call state
+    updateCallStage('Initializing room', asHost ? 'Opening live classroom' : 'Preparing interface');
     CALL.room = code;
     CALL.roomTitle = roomTitle;
     CALL.courseCode = targetCourseCode;
@@ -3344,36 +3404,27 @@ async function startCall(codeIn, asHost) {
     CALL.t0 = Date.now();
     localStream = stream;
 
-    // 7. Render classroom UI
+    // Render classroom UI now that media and authorization succeeded
     renderMeetingTab(document.getElementById('appContent'));
     toast(asHost ? 'Starting session & opening cloud room…' : 'Connecting to live class…');
 
-    // 8. Attach local audio analyser for active speaker detection
-    CALL.localAudioAnalyserCleanup = attachLocalAudioAnalyser(CALL.stream);
+    // Stage 4: Initializing cloud room (if lecturer)
+    if (window.lhSignaling && asHost) {
+      updateCallStage('Initializing room', 'Publishing cloud session');
+      await window.lhSignaling.initCallRoom(code, {
+        hostId: db.user.id,
+        hostName: db.user.name,
+        title: CALL.roomTitle,
+        courseCode: CALL.courseCode,
+        active: true,
+        chatEnabled: true,
+        startedAt: Date.now()
+      });
+    }
 
-    // 9. Call Timer
-    CALL.timer = setInterval(() => {
-      const el = document.getElementById('callTimer');
-      if (el) {
-        const s = Math.floor((Date.now() - CALL.t0) / 1000);
-        el.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
-      }
-    }, 1000);
-
-    // 10. Connect to Firestore Signaling, Presence, and Messages
+    // Stage 5: Registering participant presence
     if (window.lhSignaling) {
-      if (asHost) {
-        await window.lhSignaling.initCallRoom(code, {
-          hostId: db.user.id,
-          hostName: db.user.name,
-          title: CALL.roomTitle,
-          courseCode: CALL.courseCode,
-          active: true,
-          chatEnabled: true,
-          startedAt: Date.now()
-        });
-      }
-
+      updateCallStage('Registering participant', `${db.user.name} (${asHost ? 'Host' : 'Student'})`);
       await window.lhSignaling.registerParticipant(code, {
         id: CALL.me,
         name: db.user.name,
@@ -3385,8 +3436,13 @@ async function startCall(codeIn, asHost) {
         hand: false,
         speaking: false
       });
+    }
 
-      // Listen for room updates (ending session, announcements, chat policy)
+    // Stage 6: Connecting signaling and listeners
+    if (window.lhSignaling) {
+      updateCallStage('Connecting signaling', 'Subscribing to classroom channels');
+
+      // Room metadata updates
       CALL.unsubRoom = window.lhSignaling.listenCallRoom(code, (roomData) => {
         if (!roomData) return;
         if (!asHost && roomData.active === false) {
@@ -3403,10 +3459,10 @@ async function startCall(codeIn, asHost) {
           showCallAnnouncementBanner(roomData.announcement);
         }
       }, (err) => {
-        console.warn('[Room Listener Error]', err);
+        console.warn('[Room Listener Warning]', err);
       });
 
-      // Listen for participants
+      // Participants list
       CALL.unsubParts = window.lhSignaling.listenParticipants(code, (participants) => {
         CALL.participants = participants;
         syncParticipantsWithPeers(participants);
@@ -3414,15 +3470,15 @@ async function startCall(codeIn, asHost) {
         updateHandQueueBadge();
         updateCallParticipantCount();
       }, (err) => {
-        console.warn('[Participants Listener Error]', err);
+        console.warn('[Participants Listener Warning]', err);
       });
 
-      // Listen for WebRTC signals
+      // WebRTC signals
       CALL.unsubSignals = window.lhSignaling.listenCallSignals(code, CALL.me, asHost, CALL.t0, onIncomingSignal, (err) => {
-        console.warn('[Signals Listener Error]', err);
+        console.warn('[Signals Listener Warning]', err);
       });
 
-      // Listen for chat messages
+      // Classroom chat
       CALL.unsubChat = window.lhSignaling.listenCallMessages(code, (msg, msgId) => {
         if (CALL.chat.some(m => m.id === msgId)) return;
         CALL.chat.push({ ...msg, id: msgId });
@@ -3432,23 +3488,42 @@ async function startCall(codeIn, asHost) {
           updateChatBadge();
         }
       }, (err) => {
-        console.warn('[Chat Listener Error]', err);
+        console.warn('[Chat Listener Warning]', err);
       });
     }
 
-    // 11. Flush buffered signals
+    // Stage 7: Finalize classroom stage & WebRTC readiness
+    updateCallStage('Waiting for remote participant', asHost ? 'Class ready for students' : 'Connecting to lecturer');
+
+    // Flush any signals received during initialization
     await flushPendingSignals();
+
+    // Attach local audio analyser for active speaker detection
+    CALL.localAudioAnalyserCleanup = attachLocalAudioAnalyser(CALL.stream);
+
+    // Call Timer
+    CALL.timer = setInterval(() => {
+      const el = document.getElementById('callTimer');
+      if (el) {
+        const s = Math.floor((Date.now() - CALL.t0) / 1000);
+        el.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+      }
+    }, 1000);
 
     drawTiles();
     drawControls();
-    drawStatusBadge();
+    evaluateGlobalCallStatus();
+
+    // Call startup succeeded! Release joining lock so ongoing UI actions function normally
+    CALL.isJoining = false;
+    console.log('[LectureHub Call] Live session startup completed successfully.');
   } catch (err) {
-    console.error('[startCall Exception]', err);
+    console.error(`[LectureHub Call Failure at stage: ${CALL.initStage || 'Unknown'}]`, err);
     if (acquiredStream) {
       acquiredStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
     }
-    handleCallInitFailure(code, err, err.message);
-  } finally {
+    const failedStage = CALL.initStage || 'Connection startup';
+    handleCallInitFailure(code, err, `${failedStage} failed: ${err.message || 'Unexpected connection error'}`);
     CALL.isJoining = false;
   }
 }
