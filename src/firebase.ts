@@ -448,7 +448,8 @@ export function listenCallSignals(
   const cleanCode = roomCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const signalsRef = collection(firestoreDb, 'calls', cleanCode, 'signals');
   const seenSignalIds = new Set<string>();
-  const threshold = sinceTimestamp ? sinceTimestamp - 5000 : Date.now() - 30000;
+  // Allow up to 120s of clock skew between devices so offers/answers/candidates are never dropped
+  const threshold = sinceTimestamp ? sinceTimestamp - 120000 : Date.now() - 120000;
 
   const unsub = onSnapshot(signalsRef, (snapshot) => {
     snapshot.docChanges().forEach((change) => {

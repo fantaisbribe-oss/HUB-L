@@ -2409,6 +2409,8 @@ function playRemoteAudio() {
   setTimeout(() => {
     document.querySelectorAll('#callGrid video').forEach(v => {
       if (v.id !== 'video_me' && v.srcObject) {
+        v.muted = false;
+        v.volume = 1.0;
         v.playsInline = true;
         v.setAttribute('playsinline', '');
         v.setAttribute('webkit-playsinline', '');
@@ -2423,7 +2425,7 @@ function playRemoteAudio() {
         }
       }
     });
-  }, 300);
+  }, 100);
 }
 
 function unlockAudioManually() {
@@ -2634,6 +2636,37 @@ function updateHandQueueBadge() {
   }
 }
 
+// Standalone, robust SDP negotiation function
+async function negotiatePeer(peerId) {
+  const peer = CALL.peers[peerId];
+  if (!peer || !peer.pc) return;
+  if (peer.makingOffer || peer.pc.signalingState !== 'stable') return;
+
+  try {
+    peer.makingOffer = true;
+    const offer = await peer.pc.createOffer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: true
+    });
+    if (peer.pc.signalingState !== 'stable') return;
+    await peer.pc.setLocalDescription(offer);
+    if (window.lhSignaling && CALL.room) {
+      window.lhSignaling.sendCallSignal(CALL.room, {
+        from: CALL.me,
+        fromName: db.user.name,
+        to: peerId,
+        type: 'description',
+        payload: { sdp: peer.pc.localDescription.sdp, type: peer.pc.localDescription.type },
+        timestamp: Date.now()
+      });
+    }
+  } catch (err) {
+    console.warn(`[WebRTC negotiate] error for ${peerId}:`, err);
+  } finally {
+    peer.makingOffer = false;
+  }
+}
+
 // WebRTC Perfect Negotiation Peer Connection Factory
 function getOrCreatePeerConnection(peerId, peerName, peerRole) {
   if (CALL.peers[peerId]) {
@@ -2675,41 +2708,14 @@ function getOrCreatePeerConnection(peerId, peerName, peerRole) {
     delete CALL.pendingCandidates[peerId];
   }
 
-  // Add all local tracks
-  if (CALL.stream) {
-    CALL.stream.getTracks().forEach(track => {
-      try {
-        pc.addTrack(track, CALL.stream);
-      } catch (e) {
-        console.warn(`[RTCPeerConnection] addTrack error for ${peerId}:`, e);
-      }
-    });
-  }
-
-  // Perfect Negotiation onnegotiationneeded handler
-  pc.onnegotiationneeded = async () => {
-    try {
-      peer.makingOffer = true;
-      await pc.setLocalDescription();
-      if (window.lhSignaling && CALL.room) {
-        window.lhSignaling.sendCallSignal(CALL.room, {
-          from: CALL.me,
-          fromName: db.user.name,
-          to: peerId,
-          type: 'description',
-          payload: { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
-          timestamp: Date.now()
-        });
-      }
-    } catch (err) {
-      console.warn(`[WebRTC] Perfect negotiation error with ${peerId}:`, err);
-    } finally {
-      peer.makingOffer = false;
-    }
+  // 1. Set event handlers BEFORE adding tracks so negotiationneeded is never missed
+  pc.onnegotiationneeded = () => {
+    negotiatePeer(peerId);
   };
 
-  // Remote tracks handler: Unified-Plan & mobile stream bundling
+  // 2. Remote tracks handler: Unified-Plan & mobile stream bundling
   pc.ontrack = event => {
+    console.log(`[WebRTC ontrack] Track received from ${peerId}:`, event.track?.kind);
     if (event.streams && event.streams[0]) {
       peer.stream = event.streams[0];
     } else if (event.track) {
@@ -2717,17 +2723,20 @@ function getOrCreatePeerConnection(peerId, peerName, peerRole) {
       if (!existing) peer.stream.addTrack(event.track);
     }
 
+    // Ensure audio tracks are unmuted and enabled
+    peer.stream.getAudioTracks().forEach(t => { t.enabled = true; });
+
+    peer.connectionState = 'connected';
     syncPeerVideoElement(peerId, peer.stream);
     playRemoteAudio();
     updatePeerTileUI(peerId);
 
-    // Attach remote audio analyser for active speaker detection
     if (!peer.analyserCleanup) {
       peer.analyserCleanup = attachRemoteAudioAnalyser(peerId, peer.stream);
     }
   };
 
-  // ICE candidates trickling
+  // 3. ICE candidates trickling
   pc.onicecandidate = event => {
     if (event.candidate && window.lhSignaling && CALL.room) {
       window.lhSignaling.sendCallSignal(CALL.room, {
@@ -2741,12 +2750,9 @@ function getOrCreatePeerConnection(peerId, peerName, peerRole) {
     }
   };
 
-  // Connection state management
+  // 4. Connection state management
   pc.onconnectionstatechange = () => {
     peer.connectionState = pc.connectionState;
-    updatePeerTileUI(peerId);
-    evaluateGlobalCallStatus();
-
     if (pc.connectionState === 'connected') {
       playRemoteAudio();
     } else if (pc.connectionState === 'failed') {
@@ -2755,17 +2761,54 @@ function getOrCreatePeerConnection(peerId, peerName, peerRole) {
     } else if (pc.connectionState === 'closed') {
       dropPeer(peerId);
     }
+    updatePeerTileUI(peerId);
+    evaluateGlobalCallStatus();
   };
 
   pc.oniceconnectionstatechange = () => {
     if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      peer.connectionState = 'connected';
       playRemoteAudio();
     } else if (pc.iceConnectionState === 'failed') {
       tryIceRestart(peerId);
     }
-    evaluateGlobalCallStatus();
     updatePeerTileUI(peerId);
+    evaluateGlobalCallStatus();
   };
+
+  // 5. Add all local media tracks to the connection
+  const hasVideo = CALL.stream && CALL.stream.getVideoTracks().length > 0;
+  const hasAudio = CALL.stream && CALL.stream.getAudioTracks().length > 0;
+
+  if (CALL.stream) {
+    CALL.stream.getTracks().forEach(track => {
+      try {
+        pc.addTrack(track, CALL.stream);
+      } catch (e) {
+        console.warn(`[RTCPeerConnection] addTrack error for ${peerId}:`, e);
+      }
+    });
+  }
+
+  // Ensure transceivers exist to receive remote video/audio even if local device lacks camera or microphone
+  if (!hasVideo) {
+    try { pc.addTransceiver('video', { direction: 'recvonly' }); } catch (e) {}
+  }
+  if (!hasAudio) {
+    try { pc.addTransceiver('audio', { direction: 'recvonly' }); } catch (e) {}
+  }
+
+  // 6. Proactive negotiation trigger:
+  // Impolite peer immediately initiates negotiation
+  if (!peer.isPolite) {
+    setTimeout(() => negotiatePeer(peerId), 60);
+  }
+  // Universal fallback: if still connecting after 1.5s, trigger negotiation check
+  setTimeout(() => {
+    if (peer.pc && peer.pc.signalingState === 'stable' && peer.connectionState !== 'connected') {
+      negotiatePeer(peerId);
+    }
+  }, 1500);
 
   syncPeerVideoElement(peerId, peer.stream);
   updatePeerTileUI(peerId);
@@ -2928,7 +2971,8 @@ async function onIncomingSignal(sig, sigId) {
 
     if (desc.type === "offer") {
       try {
-        await peer.pc.setLocalDescription();
+        const answer = await peer.pc.createAnswer();
+        await peer.pc.setLocalDescription(answer);
         if (window.lhSignaling && CALL.room) {
           window.lhSignaling.sendCallSignal(CALL.room, {
             from: CALL.me,
@@ -3714,12 +3758,23 @@ function syncPeerVideoElement(peerId, stream) {
   }
 
   const v = document.getElementById(`video_${peerId}`);
-  if (v && stream && v.srcObject !== stream) {
+  if (v && stream) {
     v.playsInline = true;
     v.setAttribute('playsinline', '');
     v.setAttribute('webkit-playsinline', '');
-    v.srcObject = stream;
-    playRemoteAudio();
+    v.muted = false;
+    v.volume = 1.0;
+    if (v.srcObject !== stream) {
+      v.srcObject = stream;
+    }
+    const p = v.play();
+    if (p !== undefined) {
+      p.catch(err => {
+        console.warn('[Remote video play catch]', err);
+        const prompt = document.getElementById('audioUnlockPrompt');
+        if (prompt) prompt.style.display = 'flex';
+      });
+    }
   }
 
   updatePeerTileUI(peerId);
