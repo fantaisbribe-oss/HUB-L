@@ -557,8 +557,50 @@ export async function leaveCallRoom(roomCode: string, myPeerId: string, isHost: 
   }
 }
 
+export async function queryCourseFromCloud(codeOrId: string): Promise<any | null> {
+  if (!firestoreDb || !codeOrId) return null;
+  const raw = String(codeOrId).replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
+  const norm = raw.replace(/[^A-Z0-9]/g, '');
+
+  try {
+    // 1. Direct document ID query
+    try {
+      const docSnap = await getDoc(doc(firestoreDb, 'courses', String(codeOrId)));
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        return { id: docSnap.id, ...data, code: String(data.code || '').trim().toUpperCase() };
+      }
+    } catch {}
+
+    // 2. Query by code exact uppercase match
+    const colRef = collection(firestoreDb, 'courses');
+    const qCode = query(colRef, where('code', '==', raw));
+    const snap = await getDocs(qCode);
+    if (!snap.empty) {
+      const d = snap.docs[0];
+      const data = d.data();
+      return { id: d.id, ...data, code: String(data.code || '').trim().toUpperCase() };
+    }
+
+    // 3. Fallback scan with case-insensitive and normalized code matching
+    const allCoursesSnap = await getDocs(colRef);
+    for (const d of allCoursesSnap.docs) {
+      const data = d.data();
+      const cCode = String(data.code || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
+      const cNorm = cCode.replace(/[^A-Z0-9]/g, '');
+      if (cCode === raw || (norm && cNorm === norm) || String(d.id).toUpperCase() === raw) {
+        return { id: d.id, ...data, code: cCode };
+      }
+    }
+  } catch (err) {
+    console.warn('[LectureHub Firebase] queryCourseFromCloud error:', err);
+  }
+  return null;
+}
+
 // Expose on window for client scripts
 if (typeof window !== 'undefined') {
+  (window as any).queryCourseFromCloud = queryCourseFromCloud;
   (window as any).lhSignaling = {
     initCallRoom,
     updateCallRoom,
@@ -572,7 +614,8 @@ if (typeof window !== 'undefined') {
     listenCallSignals,
     sendCallMessage,
     listenCallMessages,
-    leaveCallRoom
+    leaveCallRoom,
+    queryCourseFromCloud
   };
 }
 

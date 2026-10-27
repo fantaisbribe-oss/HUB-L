@@ -936,18 +936,31 @@ function ensureSchema(){
   if(!Array.isArray(db.courses)) db.courses=[];
   if(!Array.isArray(db.users)) db.users=[];
   db.users.forEach(u=>{if(!u.accountId)u.accountId=(u.role==='student'?'STU-':'USR-')+u.id;if(!u.phone)u.phone='';if(!u.level)u.level='';});
-  db.courses.forEach(c=>{if(!Array.isArray(c.days))c.days=[];if(!c.startDate)c.startDate='';if(!c.endDate)c.endDate='';if(!c.startTime)c.startTime='';if(!c.endTime)c.endTime='';if(!c.location)c.location='';if(!c.level)c.level='Level 100';if(!c.code)c.code='CRS-'+Math.floor(Math.random()*900+100);});
+  db.courses.forEach(c=>{
+    if(!Array.isArray(c.days))c.days=[];
+    if(!c.startDate)c.startDate='';
+    if(!c.endDate)c.endDate='';
+    if(!c.startTime)c.startTime='';
+    if(!c.endTime)c.endTime='';
+    if(!c.location)c.location='';
+    if(!c.level)c.level='Level 100';
+    if(!c.code)c.code='CRS-'+Math.floor(Math.random()*900+100);
+    c.code=String(c.code).replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
+  });
+  db.enrollments.forEach(e=>{
+    if(e.courseCode) e.courseCode=String(e.courseCode).replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
+  });
   saveDB();
 }
 
 function courseByCode(code) {
   if (!code) return null;
-  const raw = String(code).trim().toUpperCase();
+  const raw = String(code).replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
   const norm = typeof normCode === 'function' ? normCode(code) : raw.replace(/[^A-Z0-9]/g, '');
   return (db.courses || []).find(c => {
-    const cRaw = String(c.code || '').trim().toUpperCase();
+    const cRaw = String(c.code || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
     const cNorm = (typeof normCode === 'function' ? normCode(c.code || '') : cRaw.replace(/[^A-Z0-9]/g, ''));
-    return cRaw === raw || (norm && cNorm === norm) || (c.id && String(c.id) === raw);
+    return cRaw === raw || (norm && cNorm === norm) || (c.id && String(c.id).toUpperCase() === raw);
   });
 }
 function studentEnrollments(studentId){return (db.enrollments||[]).filter(e=>String(e.studentId)===String(studentId));}
@@ -1678,7 +1691,7 @@ function renderTabContent(tabId){
     const codeInput=document.getElementById('enrollCourseCode');
     let _searchTimer = null;
     codeInput.addEventListener('input', () => {
-      const val = codeInput.value.trim().toUpperCase();
+      const val = (codeInput.value || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
       let c = courseByCode(val);
       const prevEl = document.getElementById('enrollCoursePreview');
       if (c) {
@@ -1967,16 +1980,18 @@ async function registerStudentCourse(event){
   event.preventDefault();
   if(!db.user || db.user.role !== 'student') return;
   const codeEl = document.getElementById('enrollCourseCode');
-  const code = codeEl ? codeEl.value.trim() : '';
+  const rawCode = codeEl ? codeEl.value : '';
+  const code = (rawCode || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
   if(!code){ toast('Please enter a course registration code.'); return; }
 
   let course = courseByCode(code);
   if(!course && typeof window.queryCourseFromCloud === 'function'){
-    toast('Searching cloud for course ' + code.toUpperCase() + '…');
+    toast('Searching cloud for course ' + code + '…');
     course = await window.queryCourseFromCloud(code);
     if(course){
       const exists = db.courses.findIndex(c => String(c.id) === String(course.id));
       if(exists >= 0) db.courses[exists] = course; else db.courses.push(course);
+      saveDB();
     }
   }
 
@@ -1984,7 +1999,11 @@ async function registerStudentCourse(event){
     toast('Course code not found. Check with your lecturer for the correct level code.');
     return;
   }
-  if(studentEnrollments(db.user.id).some(e=>String(e.courseId)===String(course.id))){
+  const targetCourseCodeUpper = String(course.code || '').trim().toUpperCase();
+  if(studentEnrollments(db.user.id).some(e => 
+    String(e.courseId) === String(course.id) || 
+    String(e.courseCode || '').trim().toUpperCase() === targetCourseCodeUpper
+  )){
     toast('You are already registered for this class level.');
     return;
   }
@@ -2001,7 +2020,7 @@ async function registerStudentCourse(event){
   const enrollmentRecord = {
     id:'enroll_'+db.user.id+'_'+course.id,
     courseId:course.id,
-    courseCode:course.code,
+    courseCode:targetCourseCodeUpper,
     courseName:course.name,
     studentId:db.user.id,
     accountId:db.user.accountId||('STU-'+db.user.id),
@@ -2011,8 +2030,8 @@ async function registerStudentCourse(event){
   };
 
   db.enrollments.push(enrollmentRecord);
-  db.user.code=course.code;
-  if(userIndex>=0) db.users[userIndex].code=course.code;
+  db.user.code=targetCourseCodeUpper;
+  if(userIndex>=0) db.users[userIndex].code=targetCourseCodeUpper;
   
   saveDB();
 
@@ -2054,22 +2073,61 @@ function openModal(type, courseId=null){
       <div class="field"><label>Classroom / Location</label><input type="text" id="mCourseLocation" placeholder="e.g. Lecture Hall A" value="${esc(existingCourse?.location||'')}"></div>
       <button type="submit" class="primary" style="width:100%;margin-top:10px">${editing?'Save Changes':'Save Course Level & Code'}</button>
     `;
-    mf.onsubmit=(e)=>{
+    mf.onsubmit = async (e) => {
       e.preventDefault();
-      const code=document.getElementById('mCourseCode').value.trim();
-      const level=document.getElementById('mCourseLevel').value;
-      const start=document.getElementById('mCourseStart').value;
-      const end=document.getElementById('mCourseEnd').value;
-      const startTime=document.getElementById('mCourseStartTime').value;
-      const endTime=document.getElementById('mCourseEndTime').value;
-      const days=Array.from(document.querySelectorAll('input[name="mCourseDay"]:checked')).map(o=>o.value);
+      const rawCode = document.getElementById('mCourseCode').value;
+      const code = (rawCode || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toUpperCase();
+      const level = document.getElementById('mCourseLevel').value;
+      const start = document.getElementById('mCourseStart').value;
+      const end = document.getElementById('mCourseEnd').value;
+      const startTime = document.getElementById('mCourseStartTime').value;
+      const endTime = document.getElementById('mCourseEndTime').value;
+      const days = Array.from(document.querySelectorAll('input[name="mCourseDay"]:checked')).map(o => o.value);
       
-      if(db.courses.some(c=>String(c.code).trim().toUpperCase()===code.toUpperCase()&&String(c.id)!==String(existingCourse?.id))){toast('Registration code must be unique!');return;}
-      if(!days.length){toast('Select at least one teaching day.');return;}
+      if (db.courses.some(c => String(c.code).trim().toUpperCase() === code && String(c.id) !== String(existingCourse?.id))) {
+        toast('Registration code must be unique!');
+        return;
+      }
+      if (!days.length) {
+        toast('Select at least one teaching day.');
+        return;
+      }
 
-      const courseData={name:document.getElementById('mCourseName').value.trim(),level,code,semester:document.getElementById('mCourseSem').value.trim(),days,startDate:start,endDate:end,startTime,endTime,location:document.getElementById('mCourseLocation').value.trim()};
-      if(existingCourse) Object.assign(existingCourse,courseData); else db.courses.push({id:id(),ownerId:db.user.id,...courseData});
-      saveDB(); closeModal(); toast('Course level and code saved successfully!'); renderTabContent('lecturer-courses');
+      const courseData = {
+        name: document.getElementById('mCourseName').value.trim(),
+        level,
+        code,
+        semester: document.getElementById('mCourseSem').value.trim(),
+        days,
+        startDate: start,
+        endDate: end,
+        startTime,
+        endTime,
+        location: document.getElementById('mCourseLocation').value.trim()
+      };
+
+      let courseRecord;
+      if (existingCourse) {
+        Object.assign(existingCourse, courseData);
+        courseRecord = existingCourse;
+      } else {
+        courseRecord = { id: id(), ownerId: db.user.id, ...courseData };
+        db.courses.push(courseRecord);
+      }
+
+      saveDB();
+      closeModal();
+      toast('Course level and code saved successfully!');
+      renderTabContent('lecturer-courses');
+
+      // Ensure immediate persistence to shared cloud Firestore across all laptops and devices
+      if (typeof window.syncToCloud === 'function' && courseRecord) {
+        try {
+          await window.syncToCloud('courses', courseRecord.id, courseRecord);
+        } catch (syncErr) {
+          console.warn('[Course Creation Sync Error]', syncErr);
+        }
+      }
     };
   } else if(type==='createAssignment'){
     const myCourses = db.courses.filter(c=>c.ownerId===db.user.id);
@@ -2404,10 +2462,38 @@ function genCode() {
   return c;
 }
 
+// iOS Mobile Safari WebRTC Audio Autoplay Unblocker
+// Automatically triggers play() on all remote video and audio media elements upon user interaction (click, touchstart)
+function initIosAutoplayUnblocker() {
+  const unblockAllAudio = () => {
+    document.querySelectorAll('#callGrid video, #callGrid audio').forEach(el => {
+      if (el.id !== 'video_me' && el.srcObject) {
+        el.muted = false;
+        el.volume = 1.0;
+        el.playsInline = true;
+        el.setAttribute('playsinline', '');
+        el.setAttribute('webkit-playsinline', '');
+        const p = el.play();
+        if (p !== undefined) {
+          p.then(() => {
+            const prompt = document.getElementById('audioUnlockPrompt');
+            if (prompt) prompt.style.display = 'none';
+          }).catch(() => {});
+        }
+      }
+    });
+  };
+
+  ['click', 'touchstart'].forEach(evt => {
+    document.addEventListener(evt, unblockAllAudio, { passive: true });
+  });
+}
+initIosAutoplayUnblocker();
+
 // Safely play remote audio tracks handling iOS/Android autoplay restrictions
 function playRemoteAudio() {
-  setTimeout(() => {
-    document.querySelectorAll('#callGrid video').forEach(v => {
+  const triggerPlay = () => {
+    document.querySelectorAll('#callGrid video, #callGrid audio').forEach(v => {
       if (v.id !== 'video_me' && v.srcObject) {
         v.muted = false;
         v.volume = 1.0;
@@ -2417,7 +2503,10 @@ function playRemoteAudio() {
         v.autoplay = true;
         const p = v.play();
         if (p !== undefined) {
-          p.catch(err => {
+          p.then(() => {
+            const prompt = document.getElementById('audioUnlockPrompt');
+            if (prompt) prompt.style.display = 'none';
+          }).catch(err => {
             console.warn('[Audio Autoplay Blocked on iPhone/Android]', err);
             const prompt = document.getElementById('audioUnlockPrompt');
             if (prompt) prompt.style.display = 'flex';
@@ -2425,13 +2514,18 @@ function playRemoteAudio() {
         }
       }
     });
-  }, 100);
+  };
+
+  triggerPlay();
+  setTimeout(triggerPlay, 80);
+  setTimeout(triggerPlay, 350);
 }
 
 function unlockAudioManually() {
-  document.querySelectorAll('#callGrid video').forEach(v => {
+  document.querySelectorAll('#callGrid video, #callGrid audio').forEach(v => {
     if (v.id !== 'video_me') {
       v.muted = false;
+      v.volume = 1.0;
       v.playsInline = true;
       v.setAttribute('playsinline', '');
       v.setAttribute('webkit-playsinline', '');
@@ -2715,15 +2809,19 @@ function getOrCreatePeerConnection(peerId, peerName, peerRole) {
 
   // 2. Remote tracks handler: Unified-Plan & mobile stream bundling
   pc.ontrack = event => {
-    console.log(`[WebRTC ontrack] Track received from ${peerId}:`, event.track?.kind);
+    console.log(`[WebRTC ontrack] Track received from ${peerId}: kind=${event.track?.kind}, id=${event.track?.id}`);
+    if (event.track) {
+      event.track.enabled = true;
+    }
     if (event.streams && event.streams[0]) {
       peer.stream = event.streams[0];
     } else if (event.track) {
+      if (!peer.stream) peer.stream = new MediaStream();
       const existing = peer.stream.getTracks().find(t => t.id === event.track.id);
       if (!existing) peer.stream.addTrack(event.track);
     }
 
-    // Ensure audio tracks are unmuted and enabled
+    // Ensure all remote audio tracks are unmuted and enabled
     peer.stream.getAudioTracks().forEach(t => { t.enabled = true; });
 
     peer.connectionState = 'connected';
@@ -3106,33 +3204,38 @@ async function joinByCode() {
   }
 }
 
-// Mobile-Compatible Media Acquisition with Fallbacks
+// Mobile-Compatible Media Acquisition with Explicit Two-Way Audio/Video Constraints
 async function acquireUserMedia(facingMode = 'user') {
   let stream = null;
   let camOk = true;
   let micOk = true;
 
-  // Attempt 1: Ideal constraints for mobile cameras
+  // Explicit audio constraints ensuring audio is always requested and enabled
+  const audioConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  };
+
+  // Attempt 1: Explicit constraints with mobile camera facing mode and audio processing
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: facingMode } },
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      audio: audioConstraints
     });
   } catch (err1) {
-    console.warn('[Media] Ideal constraints failed, trying basic video+audio:', err1);
-    // Attempt 2: Basic video & audio constraints without ideal constraints
+    console.warn('[Media] Ideal constraints failed, trying explicit standard { audio: true, video: true }:', err1);
+    // Attempt 2: Explicit standard constraints { audio: true, video: true }
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
     } catch (err2) {
-      console.warn('[Media] Basic constraints failed, attempting audio-only fallback:', err2);
-      // Attempt 3: Audio-only fallback (allows class participation without camera)
+      console.warn('[Media] Standard constraints failed, trying audio-only fallback:', err2);
+      // Attempt 3: Explicit audio-only fallback ({ audio: true })
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true }
-        });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         camOk = false;
         micOk = true;
-        toast('Camera unavailable: joined with microphone only.');
+        toast('Camera unavailable: joined with microphone audio only.');
       } catch (err3) {
         console.error('[Media] Audio-only fallback failed:', err3);
         const primaryErr = (err1 && (err1.name === 'NotAllowedError' || err1.name === 'PermissionDeniedError')) 
@@ -3140,6 +3243,17 @@ async function acquireUserMedia(facingMode = 'user') {
           : ((err2 && (err2.name === 'NotAllowedError' || err2.name === 'PermissionDeniedError')) ? err2 : err3);
         throw primaryErr;
       }
+    }
+  }
+
+  // Ensure all acquired audio tracks are explicitly unmuted and enabled
+  if (stream) {
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      audioTracks.forEach(track => { track.enabled = true; });
+      micOk = true;
+    } else {
+      console.warn('[Media] Acquired stream has no audio tracks!');
     }
   }
 

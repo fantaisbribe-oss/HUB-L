@@ -4,7 +4,7 @@
  */
 
 import { useEffect } from 'react';
-import { startFirebaseSync, syncRecordToCloud, testConnection } from './firebase.ts';
+import { startFirebaseSync, syncRecordToCloud, queryCourseFromCloud, testConnection } from './firebase.ts';
 
 declare global {
   interface Window {
@@ -13,11 +13,13 @@ declare global {
     renderTabContent: (tabId: string) => void;
     currentTab: string;
     syncToCloud?: (colName: string, id: string | number, data: any) => Promise<void>;
+    queryCourseFromCloud?: (codeOrId: string) => Promise<any | null>;
   }
 }
 
 export default function App() {
   useEffect(() => {
+    window.queryCourseFromCloud = queryCourseFromCloud;
     if (typeof window.syncToCloud === 'function') {
       console.log('[LectureHub App] Cloud sync already running from Firebase module.');
       return;
